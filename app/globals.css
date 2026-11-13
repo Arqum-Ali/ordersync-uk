@@ -1,0 +1,318 @@
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #f4f6fb;
+  color: #172033;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.page {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 16px;
+}
+
+.panel {
+  width: 100%;
+  max-width: 660px;
+  background: #fff;
+  border: 1px solid #e7eaf0;
+  border-radius: 20px;
+  padding: 36px;
+  box-shadow: 0 16px 45px rgba(24, 39, 75, 0.08);
+}
+
+.eyebrow {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 1.6px;
+  color: #315bd6;
+  background: #eef2ff;
+  padding: 7px 11px;
+  border-radius: 20px;
+}
+
+h1 {
+  font-size: 32px;
+  margin: 16px 0 9px;
+  letter-spacing: -0.8px;
+}
+
+.intro {
+  color: #68758a;
+  line-height: 1.65;
+  margin: 0 0 28px;
+  font-size: 14px;
+}
+
+.transaction-filebox {
+  margin-top: 24px;
+}
+
+/* Account and month fields */
+
+/* Spacing between account and month dropdowns */
+.field {
+  margin-bottom: 30px !important;
+}
+
+.field:nth-of-type(2) {
+  margin-top: 25px !important;
+}
+
+/* Space above the second dropdown label */
+.field:nth-of-type(2) .field-label {
+  margin-top: 15px;
+  display: block;
+}
+.field-label {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: #344158;
+  margin-bottom: 8px;
+}
+
+.field select {
+  width: 100%;
+  height: 48px;
+  padding: 0 13px;
+  border: 1px solid #d9dfeb;
+  border-radius: 10px;
+  background: #fff;
+  color: #172033;
+  font-size: 14px;
+  outline: none;
+  cursor: pointer;
+}
+
+.field select:focus {
+  border-color: #476fe5;
+  box-shadow: 0 0 0 3px rgba(71, 111, 229, 0.12);
+}
+
+/* Destination preview */
+
+.destination {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: #f5f7ff;
+  border: 1px solid #e2e8ff;
+  border-radius: 11px;
+  padding: 14px 16px;
+  margin: 5px 0 23px;
+  color: #52617b;
+  font-size: 13px;
+}
+
+.destination strong {
+  color: #244fc0;
+  font-size: 14px;
+}
+
+/* File upload */
+
+.filebox {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  min-height: 155px;
+  border: 2px dashed #cbd4e1;
+  border-radius: 13px;
+  padding: 25px 16px;
+  cursor: pointer;
+  text-align: center;
+  transition: 0.2s ease;
+}
+
+.filebox:hover {
+  border-color: #476fe5;
+  background: #f8faff;
+}
+
+.filebox input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.fileicon {
+  width: 43px;
+  height: 43px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 12px;
+  background: #edf2ff;
+  color: #315bd6;
+  font-size: 25px;
+}
+
+.filebox strong {
+  font-size: 14px;
+  color: #27344b;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.filebox small {
+  color: #8290a5;
+  font-size: 12px;
+}
+
+/* Buttons */
+
+button {
+  margin-top: 17px;
+  width: 100%;
+  min-height: 49px;
+  border: 0;
+  border-radius: 10px;
+  background: #2859d8;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: 0.2s ease;
+}
+
+button:hover:not(:disabled) {
+  background: #1948bf;
+  transform: translateY(-1px);
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Import messages */
+
+.alert {
+  margin-top: 19px;
+  padding: 16px;
+  border-radius: 11px;
+  line-height: 1.5;
+  font-size: 13px;
+}
+
+.error {
+  background: #fff0ef;
+  color: #a22b25;
+}
+
+.success {
+  background: #effaf3;
+  color: #17683b;
+}
+
+.stats {
+  display: flex;
+  gap: 45px;
+  margin: 16px 0;
+}
+
+.stats div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.stats b {
+  font-size: 26px;
+}
+
+.stats span {
+  font-size: 12px;
+  color: #4d6d5b;
+}
+
+/* Import rules */
+
+.rules {
+  border-top: 1px solid #edf0f4;
+  margin-top: 28px;
+  padding-top: 20px;
+}
+
+.rules h2 {
+  font-size: 16px;
+  margin: 0 0 12px;
+}
+
+.rules ul {
+  padding-left: 20px;
+  color: #58667a;
+  line-height: 1.8;
+  font-size: 13px;
+}
+
+.foot {
+  border-top: 1px solid #edf0f4;
+  padding-top: 16px;
+  margin: 22px 0 0;
+  color: #8791a1;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+/* Password field */
+
+.passwordlabel {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+  color: #45536a;
+  margin-bottom: 14px;
+}
+
+.passwordlabel input {
+  display: block;
+  width: 100%;
+  margin-top: 7px;
+  border: 1px solid #cbd4e1;
+  border-radius: 9px;
+  padding: 13px;
+  font-size: 14px;
+  outline: none;
+}
+
+.passwordlabel input:focus {
+  border-color: #476fe5;
+  box-shadow: 0 0 0 3px rgba(71, 111, 229, 0.12);
+}
+
+/* Mobile layout */
+
+@media (max-width: 520px) {
+  .page {
+    padding: 20px 12px;
+  }
+
+  .panel {
+    padding: 25px 19px;
+    border-radius: 15px;
+  }
+
+  h1 {
+    font-size: 27px;
+  }
+
+  .stats {
+    gap: 25px;
+  }
+}
