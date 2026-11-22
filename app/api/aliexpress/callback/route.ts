@@ -18,27 +18,46 @@ export async function GET(req: NextRequest) {
     const appSecret = process.env.ALIEXPRESS_APP_SECRET;
     const expectedState = process.env.ALIEXPRESS_OAUTH_STATE;
 
-    if (!appKey || !appSecret || !expectedState) {
+    const supabaseUrl = process.env.SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SECRET_KEY;
+
+    if (
+      !appKey ||
+      !appSecret ||
+      !expectedState ||
+      !supabaseUrl ||
+      !supabaseKey
+    ) {
       return NextResponse.json(
-        { success: false, message: "Missing environment configuration" },
+        {
+          success: false,
+          message: "Missing environment configuration",
+        },
         { status: 500 }
       );
     }
 
     if (!code) {
       return NextResponse.json(
-        { success: false, message: "Authorization code missing" },
+        {
+          success: false,
+          message: "Authorization code missing",
+        },
         { status: 400 }
       );
     }
 
     if (!state || state !== expectedState) {
       return NextResponse.json(
-        { success: false, message: "Invalid OAuth state" },
+        {
+          success: false,
+          message: "Invalid OAuth state",
+        },
         { status: 403 }
       );
     }
 
+    // Exchange authorization code for AliExpress tokens
     const apiPath = "/auth/token/create";
 
     const params: Record<string, string> = {
@@ -79,58 +98,89 @@ export async function GET(req: NextRequest) {
 
     const data = await apiResponse.json();
 
-    if (!apiResponse.ok || !data.access_token) {
+    if (!apiResponse.ok || !data.access_token || !data.user_id) {
       console.error("AliExpress token exchange failed:", data);
 
       return NextResponse.json(
         {
           success: false,
           message: "AliExpress token exchange failed",
-          status: apiResponse.status,
-          error: data,
         },
         { status: 400 }
       );
     }
 
-    const response = NextResponse.json({
-      success: true,
-      message: "AliExpress token received!",
-      accountPlatform: data.account_platform,
-      userId: data.user_id,
-      accessTokenReceived: true,
-      refreshTokenReceived: Boolean(data.refresh_token),
-      expiresIn: data.expires_in,
-    });
+    // Calculate token expiry dates
+    const now = Date.now();
 
-    // Temporary secure server-side cookie storage.
-    response.cookies.set(
-      "ae_access_token",
-      data.access_token,
+    const accessExpiresIn = Number(data.expires_in) || 86400;
+    const refreshExpiresIn = Number(data.refresh_expires_in);
+
+    const accessTokenExpiresAt = new Date(
+      now + accessExpiresIn * 1000
+    ).toISOString();
+
+    const refreshTokenExpiresAt =
+      Number.isFinite(refreshExpiresIn) && refreshExpiresIn > 0
+        ? new Date(now + refreshExpiresIn * 1000).toISOString()
+        : null;
+
+    // Prepare account record
+    const accountRecord = {
+      account_label: `AliExpress ${data.user_id}`,
+      email_label: null,
+      aliexpress_user_id: String(data.user_id),
+      access_token: data.access_token,
+      refresh_token: data.refresh_token || "",
+      access_token_expires_at: accessTokenExpiresAt,
+      refresh_token_expires_at: refreshTokenExpiresAt,
+      connection_status: "connected",
+      updated_at: new Date().toISOString(),
+    };
+
+    // Save or update the account in Supabase
+    const supabaseResponse = await fetch(
+      `${supabaseUrl}/rest/v1/aliexpress_accounts?on_conflict=aliexpress_user_id`,
       {
-        httpOnly: true,
-        secure: process.env.NODE_ENV === "production",
-        sameSite: "lax",
-        path: "/",
-        maxAge: Number(data.expires_in) || 86400,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          apikey: supabaseKey,
+          Authorization: `Bearer ${supabaseKey}`,
+          Prefer: "resolution=merge-duplicates,return=minimal",
+        },
+        body: JSON.stringify(accountRecord),
+        cache: "no-store",
       }
     );
 
-    if (data.refresh_token) {
-      response.cookies.set(
-        "ae_refresh_token",
-        data.refresh_token,
+    if (!supabaseResponse.ok) {
+      const errorText = await supabaseResponse.text();
+
+      console.error("Supabase save failed:", errorText);
+
+      return NextResponse.json(
         {
-          httpOnly: true,
-          secure: process.env.NODE_ENV === "production",
-          sameSite: "lax",
-          path: "/",
-          maxAge: Number(data.refresh_expires_in) || 86400,
-        }
+          success: false,
+          message: "AliExpress authorized, but saving tokens to Supabase failed.",
+          databaseStatus: supabaseResponse.status,
+        },
+        { status: 500 }
       );
     }
 
-    return response;
+    // Successful response - never expose actual tokens
+    return NextResponse.json({
+      success: true,
+      message: "AliExpress account connected and saved to Supabase!",
+      accountPlatform: data.account_platform,
+      userId: String(data.user_id),
+      accessTokenReceived: true,
+      refreshTokenReceived: Boolean(data.refresh_token),
+      accessTokenExpiresAt,
+      refreshTokenExpiryAvailable: Boolean(refreshTokenExpiresAt),
+      savedToDatabase: true,
+    });
 
   } catch (error) {
     console.error("OAuth callback error:", error);
