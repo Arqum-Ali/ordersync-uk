@@ -97,7 +97,12 @@ export async function GET(req: NextRequest) {
     );
 
     const data = await apiResponse.json();
-
+    console.log("AliExpress account fields:", {
+      user_id: data.user_id,
+      user_nick: data.user_nick,
+      account_platform: data.account_platform,
+      has_email: Boolean(data.email),
+    });
     if (!apiResponse.ok || !data.access_token || !data.user_id) {
       console.error("AliExpress token exchange failed:", data);
 
