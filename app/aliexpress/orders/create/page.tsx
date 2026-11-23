@@ -33,7 +33,7 @@ export default function CreateAliExpressOrderPage() {
     postcode: "",
     country: "GB",
     mobile: "",
-    phoneCountry: "44",
+    phoneCountry: "+",
 
     currency: "GBP",
     payment: "manual",
@@ -349,10 +349,7 @@ export default function CreateAliExpressOrderPage() {
             <input
               value={form.country}
               onChange={(e) =>
-                updateField(
-                  "country",
-                  e.target.value.toUpperCase()
-                )
+                updateField("country", e.target.value.toUpperCase())
               }
               style={inputStyle}
               maxLength={2}

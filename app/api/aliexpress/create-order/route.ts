@@ -6,13 +6,11 @@ export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   try {
-    // 1. Read frontend data
     const body = await req.json();
 
     const accountId = String(body.accountId || "").trim();
     const productId = String(body.productId || "").trim();
     const quantity = Number(body.quantity);
-
     const address = body.address || {};
 
     const paymentMode =
@@ -20,7 +18,6 @@ export async function POST(req: NextRequest) {
 
     const currency = String(body.currency || "GBP").toUpperCase();
 
-    // 2. Build recipient name
     const firstName = String(
       address.first_name || address.firstName || ""
     ).trim();
@@ -29,13 +26,10 @@ export async function POST(req: NextRequest) {
       address.last_name || address.lastName || ""
     ).trim();
 
-    const existingFullName = String(address.full_name || "").trim();
+    const fullName =
+      [firstName, lastName].filter(Boolean).join(" ") ||
+      String(address.full_name || "").trim();
 
-    const fullName = [firstName, lastName]
-      .filter(Boolean)
-      .join(" ") || existingFullName;
-
-    // 3. Validate order information
     if (
       !/^\d+$/.test(accountId) ||
       !/^\d+$/.test(productId) ||
@@ -53,13 +47,13 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 4. Validate delivery address
     const requiredAddressFields = {
       recipientName: fullName,
       address: String(address.address || "").trim(),
       city: String(address.city || "").trim(),
       province: String(address.province || "").trim(),
       country: String(address.country || "").trim().toUpperCase(),
+      zip: String(address.zip || "").trim(),
     };
 
     const missingFields = Object.entries(requiredAddressFields)
@@ -95,7 +89,6 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 5. Environment variables
     const appKey = process.env.ALIEXPRESS_APP_KEY;
     const appSecret = process.env.ALIEXPRESS_APP_SECRET;
     const supabaseUrl = process.env.SUPABASE_URL;
@@ -112,7 +105,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 6. Retrieve selected AliExpress account
+    // Retrieve selected AliExpress account
     const accountResponse = await fetch(
       `${supabaseUrl}/rest/v1/aliexpress_accounts?select=access_token,access_token_expires_at,connection_status&aliexpress_user_id=eq.${encodeURIComponent(accountId)}&limit=1`,
       {
@@ -176,57 +169,41 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 7. Prepare order information
-    const orderId = `ORD-${Date.now()}`;
+    // Preserve the phone country prefix, including "+"
+    const mobileNo = String(address.mobile_no || "")
+      .replace(/\D/g, "");
 
-    const cleanPhone = String(address.mobile_no || "")
-      .replace(/[\s()+-]/g, "");
+    const phoneCountry = String(address.phone_country || "+").trim();
 
-    const cleanPhoneCountry = String(address.phone_country || "")
-      .replace(/[\s()+-]/g, "");
-
-    const orderRequest: Record<string, any> = {
-      out_order_id: orderId,
-
-      logistics_address: {
-        contact_person: fullName,
-        full_name: fullName,
-
-        address: requiredAddressFields.address,
-        city: requiredAddressFields.city,
-        province: requiredAddressFields.province,
-        country: requiredAddressFields.country,
-
-        ...(address.address2
-          ? { address2: String(address.address2).trim() }
-          : {}),
-
-        ...(address.zip
-          ? { zip: String(address.zip).trim() }
-          : {}),
-
-        ...(cleanPhone
-          ? { mobile_no: cleanPhone }
-          : {}),
-
-        ...(cleanPhoneCountry
-          ? { phone_country: cleanPhoneCountry }
-          : {}),
-      },
-
+    // Build the payload in the same structure as the successful test
+    const orderRequest = {
       product_items: [
         {
-          product_id: Number(productId),
+          logistics_service_name: String(
+            body.logisticsServiceName ?? ""
+          ),
+          sku_attr: String(body.skuAttr ?? "").trim(),
           product_count: quantity,
-
-          ...(body.skuAttr
-            ? { sku_attr: String(body.skuAttr).trim() }
-            : {}),
+          product_id: Number(productId),
+          order_memo: String(body.orderMemo ?? ""),
         },
       ],
+
+      logistics_address: {
+        zip: requiredAddressFields.zip,
+        country: requiredAddressFields.country,
+        address: requiredAddressFields.address,
+        address2: String(address.address2 ?? "").trim(),
+        city: requiredAddressFields.city,
+        contact_person: fullName,
+        mobile_no: mobileNo,
+        phone_country: phoneCountry,
+        full_name: fullName,
+        province: requiredAddressFields.province,
+      },
     };
 
-    // 8. Prepare AliExpress API parameters
+    // AliExpress API parameters
     const method = "aliexpress.ds.order.create";
 
     const commonParams: Record<string, string> = {
@@ -247,11 +224,12 @@ export async function POST(req: NextRequest) {
 
       payment: JSON.stringify({
         pay_currency: currency,
-        try_to_pay: paymentMode === "automatic" ? "true" : "false",
+        try_to_pay:
+          paymentMode === "automatic" ? "true" : "false",
       }),
     };
 
-    // 9. Generate signature
+    // Generate signature
     const allParams = {
       ...commonParams,
       ...businessParams,
@@ -275,7 +253,7 @@ export async function POST(req: NextRequest) {
 
     const formBody = new URLSearchParams(businessParams);
 
-    // 10. Submit order to AliExpress
+    // Submit order to AliExpress
     const apiResponse = await fetch(
       `https://api-sg.aliexpress.com/sync?${queryParams.toString()}`,
       {
@@ -289,7 +267,6 @@ export async function POST(req: NextRequest) {
       }
     );
 
-    // 11. Read response
     const responseText = await apiResponse.text();
 
     let apiData: any;
@@ -327,15 +304,12 @@ export async function POST(req: NextRequest) {
             apiResult.error_msg ||
             apiData.error_response?.msg ||
             "AliExpress order creation failed.",
-
           httpStatus: apiResponse.status,
           error: apiData.error_response || apiResult,
           rawResponse: apiData,
-
           debug: {
+            requestPayload: orderRequest,
             recipientNameSent: fullName,
-            contactPersonSent: fullName,
-            countrySent: requiredAddressFields.country,
             citySent: requiredAddressFields.city,
             provinceSent: requiredAddressFields.province,
           },
@@ -344,11 +318,9 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 12. Return successful response
     return NextResponse.json({
       success: true,
       step: "ORDER_CREATED",
-      outOrderId: orderId,
       orderIds: apiResult.order_list || [],
       paymentMode,
       data: apiData,
@@ -356,9 +328,7 @@ export async function POST(req: NextRequest) {
 
   } catch (error) {
     const errorMessage =
-      error instanceof Error
-        ? error.message
-        : String(error);
+      error instanceof Error ? error.message : String(error);
 
     console.error("AliExpress create order error:", errorMessage);
 
