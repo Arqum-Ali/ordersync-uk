@@ -5,51 +5,146 @@ import { useEffect, useState } from 'react';
 
 interface ExtractedOrder {
   orderId: string;
-  date: string;
-}
-
-interface ExcelRow {
-  excelRowNumber: number;
-  cells: unknown[];
-  orderId: string;
-  date: string;
+  date?: string;
 }
 
 interface ExtractedData {
   accountId: string;
-  accountLabel: string;
-  fileName: string;
-  sheetName?: string;
-  startDate: string;
-  endDate: string;
-  columns: string[];
-  trackingIndex: number;
-  statusIndex: number;
-  rows: ExcelRow[];
+  accountLabel?: string;
+  fileName?: string;
   orders: ExtractedOrder[];
 }
 
 interface OrderResult {
   orderId: string;
-  date: string;
   loading: boolean;
   success: boolean;
   message?: string;
   data?: any;
 }
 
-function normalizeHeader(value: unknown): string {
-  return String(value ?? '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]/g, '');
+function amount(value: any, currency?: string): string {
+  if (value === null || value === undefined || value === '') {
+    return '';
+  }
+
+  return currency ? `${value} ${currency}` : String(value);
 }
 
-const excludedHeaders = new Set([
-  'ebayorderearning',
-  'profit',
-  'column11',
-  ...Array.from({ length: 16 }, (_, index) => `column${index + 16}`),
-]);
+function getCurrency(value: any, fallback = ''): string {
+  return value?.currency_code || fallback;
+}
+
+function getOrderRows(results: OrderResult[]) {
+  const rows: any[] = [];
+
+  for (const item of results) {
+    if (!item.success || !item.data) {
+      rows.push({
+        orderId: item.orderId,
+        orderStatus: item.loading ? 'Fetching...' : 'Failed',
+        apiResult: item.loading ? 'Fetching...' : item.message || 'Failed',
+      });
+      continue;
+    }
+
+    const order = item.data;
+    const store = order.store_info || {};
+    const logistics = Array.isArray(order.logistics_info_list)
+      ? order.logistics_info_list
+      : [];
+
+    const trackingNumbers = logistics
+      .map((entry: any) => entry.logistics_no)
+      .filter(Boolean)
+      .join(', ');
+
+    const logisticsServices = logistics
+      .map((entry: any) => entry.logistics_service)
+      .filter(Boolean)
+      .join(', ');
+
+    const products = Array.isArray(order.child_order_list)
+      && order.child_order_list.length > 0
+      ? order.child_order_list
+      : [{}];
+
+    for (const product of products) {
+      const currency =
+        getCurrency(product.product_price) ||
+        getCurrency(order.order_amount) ||
+        getCurrency(order.user_order_amount);
+
+      const shippingCurrency =
+        getCurrency(product.actual_shipping_fee) || currency;
+
+      rows.push({
+        orderId: item.orderId,
+        created: order.gmt_create || '',
+        orderStatus: order.order_status || '',
+        logisticsStatus: order.logistics_status || '',
+        paymentDate: order.order_paidtime_string || '',
+        tracking: trackingNumbers,
+        logisticsService: logisticsServices,
+        storeName: store.store_name || '',
+        storeId: store.store_id ?? '',
+        storeUrl: store.store_url || '',
+        productName: product.product_name || '',
+        productId: product.product_id ?? '',
+        skuId: product.sku_id || '',
+        quantity: product.product_count ?? '',
+        productPrice: amount(product.product_price?.amount, currency),
+        saleFee: amount(product.sale_fee?.amount, currency),
+        actualFee: amount(product.actual_fee?.amount, currency),
+
+        // Use ONLY actual_shipping_fee from AliExpress.
+        // Never calculate it from the original shipping fee or discounts.
+        shippingFeePaid: amount(
+          product.actual_shipping_fee?.amount ?? '0.00',
+          shippingCurrency
+        ),
+
+        orderAmount: amount(
+          order.order_amount?.amount,
+          getCurrency(order.order_amount)
+        ),
+        amountPaid: amount(
+          order.user_order_amount?.amount,
+          getCurrency(order.user_order_amount)
+        ),
+        endReason: product.end_reason || '',
+        apiResult: 'Retrieved',
+      });
+    }
+  }
+
+  return rows;
+}
+
+const columns = [
+  ['Order ID', 'orderId'],
+  ['Order Created', 'created'],
+  ['Order Status', 'orderStatus'],
+  ['Logistics Status', 'logisticsStatus'],
+  ['Payment Date', 'paymentDate'],
+  ['Tracking Number', 'tracking'],
+  ['Logistics Service', 'logisticsService'],
+  ['Store Name', 'storeName'],
+  ['Store ID', 'storeId'],
+  ['Product Name', 'productName'],
+  ['Product ID', 'productId'],
+  ['SKU ID', 'skuId'],
+  ['Quantity', 'quantity'],
+  ['Product Price', 'productPrice'],
+  ['Sale Fee', 'saleFee'],
+  ['Actual Fee', 'actualFee'],
+  ['Shipping Fee Paid', 'shippingFeePaid'],
+  ['Order Amount', 'orderAmount'],
+  ['Amount Paid', 'amountPaid'],
+  ['End Reason', 'endReason'],
+  ['Store URL', 'storeUrl'],
+  ['API Result', 'apiResult'],
+] as const;
 
 export default function OrderResultsPage() {
   const [extracted, setExtracted] = useState<ExtractedData | null>(null);
@@ -59,7 +154,7 @@ export default function OrderResultsPage() {
   useEffect(() => {
     let cancelled = false;
 
-    const loadOrders = async () => {
+    async function loadOrders() {
       try {
         const saved = sessionStorage.getItem('aliexpress-extracted-orders');
 
@@ -70,28 +165,40 @@ export default function OrderResultsPage() {
 
         const parsed: ExtractedData = JSON.parse(saved);
 
-        if (!parsed.columns || !parsed.rows || !parsed.orders) {
+        if (!parsed.accountId || !Array.isArray(parsed.orders)) {
           throw new Error(
-            'This is an older result format. Please upload your Excel file again.'
+            'Invalid extracted order data. Please upload your Excel file again.'
           );
         }
+
+        // Keep only unique, non-empty Order IDs from Excel.
+        const uniqueOrders = Array.from(
+          new Map(
+            parsed.orders
+              .map((order) => ({
+                orderId: String(order.orderId || '').trim(),
+              }))
+              .filter((order) => /^\d+$/.test(order.orderId))
+              .map((order) => [order.orderId, order])
+          ).values()
+        );
 
         if (cancelled) return;
 
         setExtracted(parsed);
 
-        const initialResults: OrderResult[] = parsed.orders.map((order) => ({
-          orderId: order.orderId,
-          date: order.date,
-          loading: true,
-          success: false,
-        }));
+        setResults(
+          uniqueOrders.map((order) => ({
+            orderId: order.orderId,
+            loading: true,
+            success: false,
+          }))
+        );
 
-        setResults(initialResults);
         setPageLoading(false);
 
-        // Retrieve each unique AliExpress order ID once.
-        for (const order of parsed.orders) {
+        // Fetch every unique order directly from AliExpress.
+        for (const order of uniqueOrders) {
           if (cancelled) return;
 
           try {
@@ -106,9 +213,21 @@ export default function OrderResultsPage() {
               }),
             });
 
-            const data = await response.json();
+            const apiResponse = await response.json();
 
             if (cancelled) return;
+
+            if (!response.ok || apiResponse.success !== true) {
+              throw new Error(
+                apiResponse.message || `API request failed (${response.status})`
+              );
+            }
+
+            const orderData = apiResponse.data?.result;
+
+            if (!orderData) {
+              throw new Error('AliExpress returned no order details.');
+            }
 
             setResults((previous) =>
               previous.map((item) =>
@@ -116,11 +235,8 @@ export default function OrderResultsPage() {
                   ? {
                       ...item,
                       loading: false,
-                      success: data.success === true,
-                      data: data.success ? data.data?.result : undefined,
-                      message: data.success
-                        ? undefined
-                        : data.message || 'Unable to retrieve order.',
+                      success: true,
+                      data: orderData,
                     }
                   : item
               )
@@ -146,10 +262,10 @@ export default function OrderResultsPage() {
           }
         }
       } catch (error) {
-        console.error('Could not load extracted orders:', error);
+        console.error('Could not load AliExpress orders:', error);
         setPageLoading(false);
       }
-    };
+    }
 
     loadOrders();
 
@@ -158,126 +274,47 @@ export default function OrderResultsPage() {
     };
   }, []);
 
-  const getLogistics = (result?: OrderResult) => {
-    if (!result?.success || !Array.isArray(result.data?.logistics_info_list)) {
-      return [];
-    }
-
-    return result.data.logistics_info_list;
-  };
-
-  const getTracking = (result?: OrderResult): string => {
-    const logistics = getLogistics(result);
-
-    return (
-      logistics
-        .map((item: any) => item.logistics_no)
-        .filter(Boolean)
-        .join(', ') || ''
-    );
-  };
-
-  const getStatus = (result?: OrderResult): string => {
-    if (!result) return '';
-    if (result.loading) return 'Fetching...';
-    if (!result.success) return 'Failed';
-
-    const status =
-      result.data?.logistics_status ||
-      result.data?.order_status ||
-      '';
-
-    return String(status).replace(/_/g, ' ');
-  };
-
   const totalOrders = results.length;
-  const completedOrders = results.filter((order) => order.success).length;
+  const successfulOrders = results.filter((item) => item.success).length;
   const failedOrders = results.filter(
-    (order) => !order.success && !order.loading
+    (item) => !item.success && !item.loading
   ).length;
-  const pendingOrders = results.filter((order) => order.loading).length;
+  const pendingOrders = results.filter((item) => item.loading).length;
+
+  const spreadsheetRows = getOrderRows(results);
 
   if (pageLoading) {
-    return (
-      <main style={styles.page}>
-        <div style={styles.panel}>Loading extracted orders...</div>
-      </main>
-    );
+    return <main style={styles.page}>Loading AliExpress orders...</main>;
   }
 
   if (!extracted) {
     return (
       <main style={styles.page}>
-        <div style={styles.panel}>
+        <section style={styles.panel}>
           <h2>No extracted orders found</h2>
-          <p>Please upload your Excel file and extract order IDs first.</p>
-          <a href="/aliexpress/orders" style={styles.link}>
-            Back to Order Management
-          </a>
-        </div>
+          <p>Please upload your Excel file and extract Order IDs first.</p>
+          <a href="/aliexpress/orders">Back to Order Management</a>
+        </section>
       </main>
     );
   }
 
-  // Determine which columns are allowed to appear in the Results table.
-  // This also filters old data already stored in sessionStorage.
-  const visibleColumnIndexes = extracted.columns
-    .map((column, index) => ({
-      index,
-      normalizedHeader: normalizeHeader(
-        column || `Column ${index + 1}`
-      ),
-    }))
-    .filter(
-      ({ normalizedHeader }) => !excludedHeaders.has(normalizedHeader)
-    )
-    .map(({ index }) => index);
-
-  // Match each Excel row to its corresponding API result.
-  const resultMap = new Map(results.map((result) => [result.orderId, result]));
-
-  const displayRows = extracted.rows.map((row) => {
-    const result = resultMap.get(row.orderId);
-    const cells = [...row.cells];
-
-    while (cells.length < extracted.columns.length) {
-      cells.push('');
-    }
-
-    const tracking = getTracking(result);
-    const status = getStatus(result);
-
-    if (tracking) {
-      cells[extracted.trackingIndex] = tracking;
-    }
-
-    if (status) {
-      cells[extracted.statusIndex] = status;
-    }
-
-    return {
-      ...row,
-      cells,
-      result,
-    };
-  });
-
   return (
     <main style={styles.page}>
       <div style={styles.container}>
-        <div style={styles.header}>
+        <header style={styles.header}>
           <div>
             <p style={styles.eyebrow}>ALIEXPRESS ORDER MANAGEMENT</p>
             <h1 style={styles.heading}>Order Results</h1>
             <p style={styles.subtitle}>
-              Your original Excel data with AliExpress tracking and status.
+              Order information retrieved directly from AliExpress.
             </p>
           </div>
 
           <a href="/aliexpress/orders" style={styles.backButton}>
             Back to Upload
           </a>
-        </div>
+        </header>
 
         <section style={styles.panel}>
           <h2 style={styles.sectionTitle}>Extraction Summary</h2>
@@ -287,19 +324,10 @@ export default function OrderResultsPage() {
               label="AliExpress Account"
               value={extracted.accountLabel || extracted.accountId}
             />
-
-            <SummaryItem label="Excel File" value={extracted.fileName} />
-
             <SummaryItem
-              label="Date Range"
-              value={`${extracted.startDate} to ${extracted.endDate}`}
+              label="Excel File"
+              value={extracted.fileName || ''}
             />
-
-            <SummaryItem
-              label="Excel Rows"
-              value={String(extracted.rows.length)}
-            />
-
             <SummaryItem
               label="Unique Order IDs"
               value={String(totalOrders)}
@@ -309,7 +337,7 @@ export default function OrderResultsPage() {
 
         <section style={styles.statsGrid}>
           <StatCard label="Total Orders" value={totalOrders} />
-          <StatCard label="Successful" value={completedOrders} />
+          <StatCard label="Successful" value={successfulOrders} />
           <StatCard label="Failed" value={failedOrders} />
           <StatCard label="Remaining" value={pendingOrders} />
         </section>
@@ -317,85 +345,58 @@ export default function OrderResultsPage() {
         <section style={styles.panel}>
           <div style={styles.resultsHeader}>
             <div>
-              <h2 style={styles.sectionTitle}>Excel Order Spreadsheet</h2>
+              <h2 style={styles.sectionTitle}>AliExpress Order Spreadsheet</h2>
               <p style={styles.subtitle}>
-                All matching rows from your uploaded Excel file.
+                Each product appears on its own row. All order details come
+                from the AliExpress API.
               </p>
             </div>
 
             <span style={styles.count}>
-              {completedOrders} / {totalOrders} API requests completed
+              {successfulOrders} / {totalOrders} orders retrieved
             </span>
           </div>
 
-          {displayRows.length === 0 ? (
-            <p>No order rows were found.</p>
+          {spreadsheetRows.length === 0 ? (
+            <p>No order results are available.</p>
           ) : (
             <div style={styles.tableWrapper}>
               <table style={styles.table}>
                 <thead>
                   <tr>
-                    <th style={styles.rowNumberHeader}>#</th>
-
-                    {visibleColumnIndexes.map((columnIndex) => (
-                      <th
-                        key={`${extracted.columns[columnIndex]}-${columnIndex}`}
-                        style={styles.th}
-                      >
-                        {extracted.columns[columnIndex] ||
-                          `Column ${columnIndex + 1}`}
+                    <th style={styles.th}>#</th>
+                    {columns.map(([label]) => (
+                      <th key={label} style={styles.th}>
+                        {label}
                       </th>
                     ))}
-
-                    <th style={styles.th}>API Result</th>
                   </tr>
                 </thead>
 
                 <tbody>
-                  {displayRows.map((row, rowIndex) => (
-                    <tr key={`${row.excelRowNumber}-${row.orderId}`}>
-                      <td style={styles.rowNumberCell}>
-                        {rowIndex + 1}
-                      </td>
+                  {spreadsheetRows.map((row, index) => (
+                    <tr key={`${row.orderId}-${index}`}>
+                      <td style={styles.rowNumber}>{index + 1}</td>
 
-                      {visibleColumnIndexes.map((cellIndex) => {
-                        const cell = row.cells[cellIndex];
-
-                        return (
-                          <td
-                            key={cellIndex}
-                            style={{
-                              ...styles.td,
-                              ...(cellIndex === extracted.trackingIndex
-                                ? styles.trackingCell
-                                : {}),
-                              ...(cellIndex === extracted.statusIndex
-                                ? styles.statusCell
-                                : {}),
-                            }}
-                            title={String(cell ?? '')}
-                          >
-                            {cell === null || cell === undefined
-                              ? ''
-                              : String(cell)}
-                          </td>
-                        );
-                      })}
-
-                      <td style={styles.td}>
-                        {row.result?.loading ? (
-                          <span style={styles.loadingBadge}>Fetching...</span>
-                        ) : row.result?.success ? (
-                          <span style={styles.successBadge}>Retrieved</span>
-                        ) : (
-                          <span
-                            style={styles.errorBadge}
-                            title={row.result?.message || 'Request failed'}
-                          >
-                            {row.result ? 'Failed' : 'Pending'}
-                          </span>
-                        )}
-                      </td>
+                      {columns.map(([label, key]) => (
+                        <td
+                          key={label}
+                          style={styles.td}
+                          title={String(row[key] ?? '')}
+                        >
+                          {key === 'storeUrl' && row[key] ? (
+                            <a
+                              href={row[key]}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              Open Store
+                            </a>
+                          ) : (
+                            String(row[key] ?? '')
+                          )}
+                        </td>
+                      ))}
                     </tr>
                   ))}
                 </tbody>
@@ -403,11 +404,11 @@ export default function OrderResultsPage() {
             </div>
           )}
 
-          <p style={styles.tableNote}>
-            The excluded columns are hidden from this Results table.
-            Tracking and Status are filled from the AliExpress response when
-            available. If an API request fails, the row remains visible and
-            its other original data is preserved.
+          <p style={styles.note}>
+            Excel supplies only the AliExpress Order IDs. Product, store,
+            payment, tracking, shipping and status information is retrieved
+            from AliExpress. Tax and discount fields are not displayed.
+            Shipping Fee Paid uses only actual_shipping_fee.amount.
           </p>
         </section>
       </div>
@@ -453,7 +454,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#172033',
   },
   container: {
-    maxWidth: '1500px',
+    maxWidth: '1600px',
     margin: '0 auto',
   },
   header: {
@@ -554,20 +555,10 @@ const styles: Record<string, React.CSSProperties> = {
   },
   table: {
     width: '100%',
-    minWidth: '1100px',
+    minWidth: '1800px',
     borderCollapse: 'collapse',
     fontSize: '13px',
     whiteSpace: 'nowrap',
-  },
-  rowNumberHeader: {
-    background: '#eaf0f7',
-    padding: '12px',
-    borderBottom: '1px solid #dce2eb',
-    textAlign: 'center',
-    color: '#475569',
-    position: 'sticky',
-    left: 0,
-    zIndex: 2,
   },
   th: {
     background: '#eaf0f7',
@@ -576,65 +567,28 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '12px 14px',
     borderBottom: '1px solid #dce2eb',
     fontWeight: 700,
+    position: 'sticky',
+    top: 0,
+    zIndex: 1,
   },
-  rowNumberCell: {
+  rowNumber: {
     background: '#f8fafc',
     padding: '11px 12px',
     borderBottom: '1px solid #edf0f5',
     textAlign: 'center',
     color: '#64748b',
-    position: 'sticky',
-    left: 0,
-    zIndex: 1,
   },
   td: {
     padding: '11px 14px',
     borderBottom: '1px solid #edf0f5',
     color: '#334155',
-    maxWidth: '280px',
+    maxWidth: '300px',
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
-  trackingCell: {
-    color: '#075985',
-    fontWeight: 600,
-  },
-  statusCell: {
-    color: '#166534',
-    fontWeight: 600,
-  },
-  tableNote: {
+  note: {
     color: '#64748b',
     fontSize: '12px',
     marginTop: '15px',
-  },
-  successBadge: {
-    background: '#dcfce7',
-    color: '#166534',
-    borderRadius: '20px',
-    padding: '6px 10px',
-    fontSize: '11px',
-    fontWeight: 700,
-  },
-  errorBadge: {
-    background: '#fee2e2',
-    color: '#991b1b',
-    borderRadius: '20px',
-    padding: '6px 10px',
-    fontSize: '11px',
-    fontWeight: 700,
-  },
-  loadingBadge: {
-    background: '#e0f2fe',
-    color: '#075985',
-    borderRadius: '20px',
-    padding: '6px 10px',
-    fontSize: '11px',
-    fontWeight: 700,
-  },
-  link: {
-    display: 'inline-block',
-    marginTop: '12px',
-    color: '#2563eb',
   },
 };
