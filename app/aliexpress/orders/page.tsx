@@ -190,18 +190,39 @@ export default function AliExpressOrdersPage() {
         throw new Error('Could not find the "Ali Express order ID" column.');
       }
 
-      // Preserve every original Excel column.
-      const columns = [...originalHeaders];
+      // Columns to exclude from the results spreadsheet.
+      const excludedHeaders = new Set([
+        'aliexpressprice',
+        'ebayorderearning',
+        'profit',
+        'column11',
+        ...Array.from({ length: 16 }, (_, index) => `column${index + 16}`),
+      ]);
+
+      // Keep only the original columns that are not excluded.
+      const keptColumnIndexes = originalHeaders
+        .map((header, index) => ({
+          header: normalizeHeader(header),
+          index,
+        }))
+        .filter(({ header }) => !excludedHeaders.has(header))
+        .map(({ index }) => index);
+
+      const columns = keptColumnIndexes.map(
+        (index) => originalHeaders[index]
+      );
+
+      const filteredHeaders = columns.map(normalizeHeader);
 
       // Add Tracking and Status columns if they do not already exist.
-      let trackingIndex = headers.indexOf('tracking');
+      let trackingIndex = filteredHeaders.indexOf('tracking');
 
       if (trackingIndex === -1) {
         trackingIndex = columns.length;
         columns.push('Tracking');
       }
 
-      let statusIndex = headers.indexOf('status');
+      let statusIndex = filteredHeaders.indexOf('status');
 
       if (statusIndex === -1) {
         statusIndex = columns.length;
@@ -221,6 +242,7 @@ export default function AliExpressOrdersPage() {
 
       for (let index = 1; index < matrix.length; index++) {
         const originalRow = matrix[index];
+
         const orderDate = parseExcelDate(
           originalRow[dateIndex],
           Number(startDate.substring(0, 4))
@@ -236,9 +258,12 @@ export default function AliExpressOrdersPage() {
 
         if (!orderId) continue;
 
-        // Preserve all cells, including blank cells.
-        const cells = [...originalRow];
+        // Preserve only the selected Excel columns.
+        const cells = keptColumnIndexes.map(
+          (columnIndex) => originalRow[columnIndex] ?? ''
+        );
 
+        // Add empty cells for any new Tracking or Status columns.
         while (cells.length < columns.length) {
           cells.push('');
         }
@@ -443,8 +468,8 @@ export default function AliExpressOrdersPage() {
         </button>
 
         <p className={styles.mutedText}>
-          Your original Excel rows and columns will be preserved on the
-          Results page. Each unique AliExpress order ID will be retrieved once.
+          Unwanted columns will be excluded from the Results page. Each
+          unique AliExpress order ID will be retrieved once.
         </p>
 
         <p>
