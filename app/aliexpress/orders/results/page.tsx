@@ -1,4 +1,3 @@
-
 'use client';
 
 import { useEffect, useState } from 'react';
@@ -39,8 +38,6 @@ function getCurrency(value: any, fallback = ''): string {
   return value?.currency_code || fallback;
 }
 
-// AliExpress tracking timestamps can be milliseconds or seconds.
-// This handles both formats.
 function toTimestamp(value: any): number | null {
   const number = Number(value);
 
@@ -51,8 +48,6 @@ function toTimestamp(value: any): number | null {
   return number < 1e12 ? number * 1000 : number;
 }
 
-// gmt_create is returned as a date string without a timezone.
-// Treat it as UTC for comparison with tracking timestamps.
 function parseOrderDate(value: any): number | null {
   if (!value) return null;
 
@@ -156,8 +151,6 @@ function getTrackingSummary(orderResult: OrderResult, order: any) {
     (event: any) => isDeliveryEvent(event)
   );
 
-  // For multiple packages, consider the order delivered only
-  // when every tracking line has a delivery event.
   const allPackagesDelivered =
     lines.length > 0 &&
     lines.every((line: any) =>
@@ -287,7 +280,6 @@ function getOrderRows(results: OrderResult[]) {
           currency
         ),
 
-        // Use ONLY actual_shipping_fee from AliExpress.
         shippingFeePaid: amount(
           product.actual_shipping_fee?.amount ?? '0.00',
           shippingCurrency
@@ -408,7 +400,6 @@ export default function OrderResultsPage() {
           if (cancelled) return;
 
           try {
-            // FIRST: Get order and product information.
             const orderResponse = await fetch(
               '/api/aliexpress/order-details',
               {
@@ -442,8 +433,6 @@ export default function OrderResultsPage() {
 
             if (cancelled) return;
 
-            // SECOND: Get tracking information.
-            // Tracking failure does not discard successful order data.
             let trackingData: any = undefined;
             let trackingMessage = '';
 
@@ -538,20 +527,6 @@ export default function OrderResultsPage() {
     };
   }, []);
 
-  const totalOrders = results.length;
-
-  const successfulOrders = results.filter(
-    (item) => item.success
-  ).length;
-
-  const failedOrders = results.filter(
-    (item) => !item.success && !item.loading
-  ).length;
-
-  const pendingOrders = results.filter(
-    (item) => item.loading
-  ).length;
-
   const spreadsheetRows = getOrderRows(results);
 
   if (pageLoading) {
@@ -606,54 +581,6 @@ export default function OrderResultsPage() {
         </header>
 
         <section style={styles.panel}>
-          <h2 style={styles.sectionTitle}>
-            Extraction Summary
-          </h2>
-
-          <div style={styles.summaryGrid}>
-            <SummaryItem
-              label="AliExpress Account"
-              value={
-                extracted.accountLabel ||
-                extracted.accountId
-              }
-            />
-
-            <SummaryItem
-              label="Excel File"
-              value={extracted.fileName || ''}
-            />
-
-            <SummaryItem
-              label="Unique Order IDs"
-              value={String(totalOrders)}
-            />
-          </div>
-        </section>
-
-        <section style={styles.statsGrid}>
-          <StatCard
-            label="Total Orders"
-            value={totalOrders}
-          />
-
-          <StatCard
-            label="Successful"
-            value={successfulOrders}
-          />
-
-          <StatCard
-            label="Failed"
-            value={failedOrders}
-          />
-
-          <StatCard
-            label="Remaining"
-            value={pendingOrders}
-          />
-        </section>
-
-        <section style={styles.panel}>
           <div style={styles.resultsHeader}>
             <div>
               <h2 style={styles.sectionTitle}>
@@ -665,10 +592,6 @@ export default function OrderResultsPage() {
                 Order and tracking information comes from AliExpress.
               </p>
             </div>
-
-            <span style={styles.count}>
-              {successfulOrders} / {totalOrders} orders retrieved
-            </span>
           </div>
 
           {spreadsheetRows.length === 0 ? (
@@ -752,36 +675,6 @@ export default function OrderResultsPage() {
   );
 }
 
-function SummaryItem({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
-  return (
-    <div>
-      <p style={styles.smallLabel}>{label}</p>
-      <p style={styles.summaryValue}>{value}</p>
-    </div>
-  );
-}
-
-function StatCard({
-  label,
-  value,
-}: {
-  label: string;
-  value: number;
-}) {
-  return (
-    <div style={styles.statCard}>
-      <p style={styles.smallLabel}>{label}</p>
-      <h2 style={styles.statValue}>{value}</h2>
-    </div>
-  );
-}
-
 const styles: Record<string, React.CSSProperties> = {
   page: {
     minHeight: '100vh',
@@ -844,47 +737,6 @@ const styles: Record<string, React.CSSProperties> = {
     margin: '0 0 18px',
   },
 
-  summaryGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
-    gap: '22px',
-  },
-
-  smallLabel: {
-    fontSize: '11px',
-    fontWeight: 700,
-    color: '#8490a3',
-    textTransform: 'uppercase',
-    margin: '0 0 7px',
-    letterSpacing: '0.4px',
-  },
-
-  summaryValue: {
-    fontSize: '14px',
-    fontWeight: 600,
-    overflowWrap: 'anywhere',
-    margin: 0,
-  },
-
-  statsGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
-    gap: '14px',
-    marginBottom: '22px',
-  },
-
-  statCard: {
-    background: '#fff',
-    border: '1px solid #e5eaf1',
-    borderRadius: '10px',
-    padding: '18px',
-  },
-
-  statValue: {
-    fontSize: '26px',
-    margin: 0,
-  },
-
   resultsHeader: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -892,12 +744,6 @@ const styles: Record<string, React.CSSProperties> = {
     flexWrap: 'wrap',
     gap: '12px',
     marginBottom: '18px',
-  },
-
-  count: {
-    fontSize: '13px',
-    color: '#475569',
-    fontWeight: 600,
   },
 
   tableWrapper: {
