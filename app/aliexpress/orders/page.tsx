@@ -2,6 +2,8 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
+import styles from './orders.module.css';
 
 type AliExpressAccount = {
   account_label: string;
@@ -49,24 +51,28 @@ export default function AliExpressOrdersPage() {
     loadAccounts();
   }, []);
 
+  const canContinue =
+    selectedAccount &&
+    file &&
+    startDate &&
+    endDate &&
+    startDate <= endDate;
+
   return (
-    <main className="page">
-      <section className="panel">
-        <div className="eyebrow">ALIEXPRESS INTEGRATION</div>
+    <main className={styles.page}>
+      <section className={styles.panel}>
+        <div className={styles.eyebrow}>ALIEXPRESS INTEGRATION</div>
 
         <h1>Order Management</h1>
 
-        <p className="intro">
-          Upload your Excel file and retrieve AliExpress order tracking details.
+        <p className={styles.intro}>
+          Select your account, choose a date range and upload your Excel file.
         </p>
 
-        <div style={{
-          padding: '18px',
-          border: '1px solid #ddd',
-          borderRadius: '12px',
-          marginBottom: '20px'
-        }}>
-          <strong>1. Select AliExpress Account</strong>
+        <div className={styles.section}>
+          <strong className={styles.sectionTitle}>
+            1. Select AliExpress Account
+          </strong>
 
           {loading && <p>Loading accounts...</p>}
 
@@ -79,16 +85,11 @@ export default function AliExpressOrdersPage() {
           {accounts.map(account => (
             <label
               key={account.aliexpress_user_id}
-              style={{
-                display: 'block',
-                padding: '12px',
-                marginTop: '10px',
-                border: selectedAccount === account.aliexpress_user_id
-                  ? '2px solid #2563eb'
-                  : '1px solid #ddd',
-                borderRadius: '8px',
-                cursor: 'pointer'
-              }}
+              className={`${styles.accountOption} ${
+                selectedAccount === account.aliexpress_user_id
+                  ? styles.accountSelected
+                  : ''
+              }`}
             >
               <input
                 type="radio"
@@ -103,100 +104,92 @@ export default function AliExpressOrdersPage() {
 
               <strong>{account.account_label}</strong>
 
-              <p style={{ fontSize: '13px', color: '#16803c', margin: '5px 0 0 25px' }}>
+              <p className={styles.accountDetails}>
                 Status: {account.connection_status}
               </p>
             </label>
           ))}
         </div>
 
-        <div style={{
-          padding: '18px',
-          border: '1px solid #ddd',
-          borderRadius: '12px',
-          marginBottom: '20px'
-        }}>
-          <strong>2. Upload Excel File</strong>
+        <div className={styles.section}>
+          <strong className={styles.sectionTitle}>
+            2. Select Date Range
+          </strong>
 
-          <p style={{ color: '#666', fontSize: '14px' }}>
-            Select the Excel file containing your AliExpress order IDs.
+          <div className={styles.dateGrid}>
+            <div>
+              <label className={styles.fieldLabel}>Start Date</label>
+              <input
+                className={styles.dateInput}
+                type="date"
+                value={startDate}
+                onChange={event => setStartDate(event.target.value)}
+              />
+            </div>
+
+            <div>
+              <label className={styles.fieldLabel}>End Date</label>
+              <input
+                className={styles.dateInput}
+                type="date"
+                value={endDate}
+                min={startDate || undefined}
+                onChange={event => setEndDate(event.target.value)}
+              />
+            </div>
+          </div>
+
+          <p className={styles.mutedText}>
+            Only orders within this date range will be processed.
           </p>
+        </div>
 
-          <input
-            type="file"
-            accept=".xlsx,.xls"
-            onChange={event =>
-              setFile(event.target.files?.[0] || null)
-            }
-          />
+        <div className={styles.section}>
+          <strong className={styles.sectionTitle}>
+            3. Upload Excel File
+          </strong>
+
+          <label className={styles.uploadBox}>
+            <span className={styles.uploadIcon}>📄</span>
+            <span className={styles.uploadText}>
+              Click here to select your Excel file
+            </span>
+            <span className={styles.uploadHint}>
+              Supported formats: .xlsx and .xls
+            </span>
+
+            <input
+              className={styles.fileInput}
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={event =>
+                setFile(event.target.files?.[0] || null)
+              }
+            />
+          </label>
 
           {file && (
-            <p style={{ fontSize: '13px', color: '#16803c' }}>
+            <p className={styles.selectedFile}>
               Selected file: {file.name}
             </p>
           )}
         </div>
 
-        <div style={{
-          padding: '18px',
-          border: '1px solid #ddd',
-          borderRadius: '12px',
-          marginBottom: '20px'
-        }}>
-          <strong>3. Select Date Range</strong>
-
-          <div style={{ marginTop: '14px' }}>
-            <label>Start Date</label>
-            <input
-              type="date"
-              value={startDate}
-              onChange={event => setStartDate(event.target.value)}
-              style={{ display: 'block', marginTop: '6px', padding: '8px' }}
-            />
-          </div>
-
-          <div style={{ marginTop: '14px' }}>
-            <label>End Date</label>
-            <input
-              type="date"
-              value={endDate}
-              onChange={event => setEndDate(event.target.value)}
-              style={{ display: 'block', marginTop: '6px', padding: '8px' }}
-            />
-          </div>
-        </div>
-
-        <button
-          type="button"
-          disabled={
-            !selectedAccount ||
-            !file ||
-            !startDate ||
-            !endDate ||
-            startDate > endDate
-          }
+        <Link
+          href="/aliexpress/orders/results"
+          className={styles.primaryButton}
           style={{
-            padding: '12px 20px',
-            cursor: 'pointer'
+            opacity: canContinue ? 1 : 0.5,
+            pointerEvents: canContinue ? 'auto' : 'none',
+          }}
+          aria-disabled={!canContinue}
+          onClick={event => {
+            if (!canContinue) event.preventDefault();
           }}
         >
-          Retrieve Orders
-        </button>
-
-        <div style={{
-          marginTop: '25px',
-          padding: '18px',
-          border: '1px solid #ddd',
-          borderRadius: '12px'
-        }}>
-          <strong>4. Order Results</strong>
-
-          <p style={{ color: '#777', fontSize: '14px' }}>
-            Your order tracking results will appear here after retrieval is implemented.
-          </p>
-        </div>
+          Continue to Results
+        </Link>
       </section>
     </main>
   );
 }
-

@@ -1,0 +1,204 @@
+
+.page {
+  width: 100%;
+}
+
+.panel {
+  width: 100%;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.eyebrow {
+  color: #2563eb;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 1.5px;
+  margin-bottom: 10px;
+}
+
+.intro {
+  color: #666;
+  margin-bottom: 25px;
+}
+
+.section {
+  background: white;
+  border: 1px solid #e5e7eb;
+  border-radius: 14px;
+  padding: 22px;
+  margin-bottom: 20px;
+}
+
+.sectionTitle {
+  display: block;
+  font-size: 16px;
+  font-weight: 700;
+  margin-bottom: 15px;
+}
+
+.accountOption {
+  display: block;
+  padding: 14px;
+  margin-top: 10px;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.accountSelected {
+  border: 2px solid #2563eb;
+  background: #f5f8ff;
+}
+
+.accountDetails {
+  color: #16803c;
+  font-size: 13px;
+  margin: 6px 0 0 25px;
+}
+
+.dateGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.fieldLabel {
+  display: block;
+  color: #444;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+
+.dateInput {
+  width: 100%;
+  padding: 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 9px;
+  background: white;
+  font-size: 14px;
+}
+
+.uploadBox {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: 165px;
+  padding: 25px;
+  border: 2px dashed #93a4bd;
+  border-radius: 12px;
+  background: #f8fafc;
+  cursor: pointer;
+  text-align: center;
+  transition: background 0.2s, border-color 0.2s;
+}
+
+.uploadBox:hover {
+  background: #eff6ff;
+  border-color: #2563eb;
+}
+
+.uploadIcon {
+  font-size: 32px;
+}
+
+.uploadText {
+  color: #1f2937;
+  font-weight: 600;
+}
+
+.uploadHint {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.fileInput {
+  display: none;
+}
+
+.selectedFile {
+  color: #16803c;
+  font-size: 13px;
+  margin-top: 12px;
+  overflow-wrap: anywhere;
+}
+
+.primaryButton {
+  display: inline-block;
+  padding: 12px 22px;
+  border: 0;
+  border-radius: 9px;
+  background: #2563eb;
+  color: white;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.primaryButton:hover {
+  background: #1d4ed8;
+}
+
+.secondaryButton {
+  display: inline-block;
+  padding: 11px 18px;
+  border: 1px solid #d1d5db;
+  border-radius: 9px;
+  color: #374151;
+  text-decoration: none;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.mutedText {
+  color: #6b7280;
+  font-size: 13px;
+}
+
+.tableWrap {
+  width: 100%;
+  overflow-x: auto;
+}
+
+.resultsTable {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 700px;
+  font-size: 13px;
+}
+
+.resultsTable th,
+.resultsTable td {
+  padding: 14px 12px;
+  border-bottom: 1px solid #e5e7eb;
+  text-align: left;
+}
+
+.resultsTable th {
+  background: #f8fafc;
+  color: #4b5563;
+  font-weight: 700;
+}
+
+.emptyState {
+  padding: 35px 15px;
+  text-align: center;
+  color: #6b7280;
+  background: #f8fafc;
+  border-radius: 10px;
+}
+
+@media (max-width: 650px) {
+  .section {
+    padding: 16px;
+  }
+
+  .dateGrid {
+    grid-template-columns: 1fr;
+  }
+}
+
