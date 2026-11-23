@@ -24,6 +24,38 @@ function normalizeHeader(value: unknown): string {
     .replace(/[^a-z0-9]/g, '');
 }
 
+// Read the original Excel cell value instead of its formatted display value.
+function getExactOrderId(
+  worksheet: XLSX.WorkSheet,
+  rowIndex: number,
+  columnIndex: number
+): string {
+  const address = XLSX.utils.encode_cell({
+    r: rowIndex,
+    c: columnIndex,
+  });
+
+  const cell = worksheet[address];
+
+  if (!cell || cell.v === undefined || cell.v === null) {
+    return '';
+  }
+
+  const value = cell.v;
+
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value)) {
+      throw new Error(
+        `AliExpress Order ID in Excel row ${rowIndex + 1} is stored as an unsafe number. Excel may have rounded the ID. Please use the original order ID stored as text.`
+      );
+    }
+
+    return value.toFixed(0);
+  }
+
+  return String(value).trim();
+}
+
 function parseExcelDate(value: unknown, fallbackYear: number): string | null {
   if (value instanceof Date && !isNaN(value.getTime())) {
     return [
@@ -166,7 +198,7 @@ export default function AliExpressOrdersPage() {
       const matrix = XLSX.utils.sheet_to_json(worksheet, {
         header: 1,
         defval: '',
-        raw: false,
+        raw: true,
       }) as unknown[][];
 
       if (matrix.length < 2) {
@@ -221,6 +253,7 @@ export default function AliExpressOrdersPage() {
 
       for (let index = 1; index < matrix.length; index++) {
         const originalRow = matrix[index];
+
         const orderDate = parseExcelDate(
           originalRow[dateIndex],
           Number(startDate.substring(0, 4))
@@ -232,12 +265,20 @@ export default function AliExpressOrdersPage() {
 
         matchingDateRows++;
 
-        const orderId = String(originalRow[orderIdIndex] ?? '').trim();
+        // Get the original cell value to avoid scientific notation.
+        const orderId = getExactOrderId(
+          worksheet,
+          index,
+          orderIdIndex
+        );
 
         if (!orderId) continue;
 
         // Preserve all cells, including blank cells.
         const cells = [...originalRow];
+
+        // Keep the order ID in its original Excel column as a string.
+        cells[orderIdIndex] = orderId;
 
         while (cells.length < columns.length) {
           cells.push('');
