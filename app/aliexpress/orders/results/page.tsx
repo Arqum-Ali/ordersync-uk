@@ -20,8 +20,12 @@ interface OrderResult {
   loading: boolean;
   success: boolean;
   message?: string;
+  trackingMessage?: string;
   data?: any;
+  trackingData?: any;
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function amount(value: any, currency?: string): string {
   if (value === null || value === undefined || value === '') {
@@ -35,6 +39,180 @@ function getCurrency(value: any, fallback = ''): string {
   return value?.currency_code || fallback;
 }
 
+// AliExpress tracking timestamps can be milliseconds or seconds.
+// This handles both formats.
+function toTimestamp(value: any): number | null {
+  const number = Number(value);
+
+  if (!Number.isFinite(number) || number <= 0) {
+    return null;
+  }
+
+  return number < 1e12 ? number * 1000 : number;
+}
+
+// gmt_create is returned as a date string without a timezone.
+// Treat it as UTC for comparison with tracking timestamps.
+function parseOrderDate(value: any): number | null {
+  if (!value) return null;
+
+  const dateString = String(value).trim();
+  const normalized = dateString.includes('T')
+    ? dateString
+    : dateString.replace(' ', 'T');
+
+  const timestamp = Date.parse(
+    /Z$|[+-]\d{2}:\d{2}$/.test(normalized)
+      ? normalized
+      : `${normalized}Z`
+  );
+
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function formatDate(value: any): string {
+  const timestamp = toTimestamp(value);
+
+  if (!timestamp) return '';
+
+  return new Date(timestamp).toLocaleString('en-GB');
+}
+
+function formatOrderDate(value: any): string {
+  const timestamp = parseOrderDate(value);
+
+  if (!timestamp) return String(value || '');
+
+  return new Date(timestamp).toLocaleString('en-GB');
+}
+
+function isDeliveryEvent(event: any): boolean {
+  const name = String(event?.tracking_name || '').toLowerCase();
+  const description = String(
+    event?.tracking_detail_desc || ''
+  ).toLowerCase();
+
+  return (
+    name.includes('delivered') ||
+    description.includes('package delivered') ||
+    description.includes('successfully delivered') ||
+    description.includes('delivered to recipient')
+  );
+}
+
+function getTrackingSummary(orderResult: OrderResult, order: any) {
+  const trackingResult =
+    orderResult.trackingData?.data?.result;
+
+  const lines = Array.isArray(
+    trackingResult?.data?.tracking_detail_line_list
+  )
+    ? trackingResult.data.tracking_detail_line_list
+    : [];
+
+  const events = lines.flatMap((line: any) =>
+    (Array.isArray(line.detail_node_list)
+      ? line.detail_node_list
+      : []
+    ).map((event: any) => ({
+      ...event,
+      timestamp: toTimestamp(event.time_stamp),
+    }))
+  );
+
+  const sortedEvents = events
+    .filter((event: any) => event.timestamp)
+    .sort(
+      (a: any, b: any) => b.timestamp - a.timestamp
+    );
+
+  const latestEvent = sortedEvents[0];
+
+  const trackingNumbers = lines
+    .map((line: any) => line.mail_no)
+    .filter(Boolean);
+
+  const fallbackLogistics = Array.isArray(
+    order.logistics_info_list
+  )
+    ? order.logistics_info_list
+    : [];
+
+  const trackingNumber =
+    trackingNumbers.length > 0
+      ? [...new Set(trackingNumbers)].join(', ')
+      : fallbackLogistics
+          .map((item: any) => item.logistics_no)
+          .filter(Boolean)
+          .join(', ');
+
+  const couriers = lines.flatMap((line: any) =>
+    [line.carrier_name, line.cp_name].filter(Boolean)
+  );
+
+  const uniqueCouriers = [...new Set(couriers)];
+
+  const deliveryEvents = sortedEvents.filter(
+    (event: any) => isDeliveryEvent(event)
+  );
+
+  // For multiple packages, consider the order delivered only
+  // when every tracking line has a delivery event.
+  const allPackagesDelivered =
+    lines.length > 0 &&
+    lines.every((line: any) =>
+      Array.isArray(line.detail_node_list) &&
+      line.detail_node_list.some((event: any) =>
+        isDeliveryEvent(event)
+      )
+    );
+
+  const deliveryTimestamp = allPackagesDelivered
+    ? Math.max(
+        ...deliveryEvents.map(
+          (event: any) => event.timestamp
+        )
+      )
+    : null;
+
+  const orderTimestamp = parseOrderDate(order.gmt_create);
+
+  let deliveryDays = '';
+  let deliveryPerformance = 'Not Delivered';
+  let deliveryDate = '';
+
+  if (!trackingResult?.ret && lines.length === 0) {
+    deliveryPerformance = 'Tracking Data Not Found';
+  } else if (deliveryTimestamp && orderTimestamp) {
+    const difference = deliveryTimestamp - orderTimestamp;
+
+    if (difference >= 0) {
+      deliveryDays = `${(difference / DAY_MS).toFixed(1)} days`;
+
+      deliveryPerformance =
+        difference > 10 * DAY_MS ? 'Late' : 'On Time';
+
+      deliveryDate = formatDate(deliveryTimestamp);
+    } else {
+      deliveryPerformance = 'Date Check Required';
+      deliveryDate = formatDate(deliveryTimestamp);
+    }
+  } else if (deliveryTimestamp) {
+    deliveryDate = formatDate(deliveryTimestamp);
+    deliveryPerformance = 'Order Date Unavailable';
+  }
+
+  return {
+    courier: uniqueCouriers.join(' / '),
+    tracking: trackingNumber,
+    latestTrackingEvent: latestEvent?.tracking_name || '',
+    description: latestEvent?.tracking_detail_desc || '',
+    deliveryDate,
+    deliveryDays,
+    deliveryPerformance,
+  };
+}
+
 function getOrderRows(results: OrderResult[]) {
   const rows: any[] = [];
 
@@ -43,31 +221,24 @@ function getOrderRows(results: OrderResult[]) {
       rows.push({
         orderId: item.orderId,
         orderStatus: item.loading ? 'Fetching...' : 'Failed',
-        apiResult: item.loading ? 'Fetching...' : item.message || 'Failed',
+        apiResult: item.loading
+          ? 'Fetching...'
+          : item.message || 'Failed',
       });
+
       continue;
     }
 
     const order = item.data;
     const store = order.store_info || {};
-    const logistics = Array.isArray(order.logistics_info_list)
-      ? order.logistics_info_list
-      : [];
 
-    const trackingNumbers = logistics
-      .map((entry: any) => entry.logistics_no)
-      .filter(Boolean)
-      .join(', ');
+    const tracking = getTrackingSummary(item, order);
 
-    const logisticsServices = logistics
-      .map((entry: any) => entry.logistics_service)
-      .filter(Boolean)
-      .join(', ');
-
-    const products = Array.isArray(order.child_order_list)
-      && order.child_order_list.length > 0
-      ? order.child_order_list
-      : [{}];
+    const products =
+      Array.isArray(order.child_order_list) &&
+      order.child_order_list.length > 0
+        ? order.child_order_list
+        : [{}];
 
     for (const product of products) {
       const currency =
@@ -80,25 +251,43 @@ function getOrderRows(results: OrderResult[]) {
 
       rows.push({
         orderId: item.orderId,
-        created: order.gmt_create || '',
+
+        created: formatOrderDate(order.gmt_create),
         orderStatus: order.order_status || '',
-        logisticsStatus: order.logistics_status || '',
         paymentDate: order.order_paidtime_string || '',
-        tracking: trackingNumbers,
-        logisticsService: logisticsServices,
+
+        courier: tracking.courier,
+        tracking: tracking.tracking,
+        latestTrackingEvent: tracking.latestTrackingEvent,
+        description: tracking.description,
+        deliveryDate: tracking.deliveryDate,
+        deliveryDays: tracking.deliveryDays,
+        deliveryPerformance: tracking.deliveryPerformance,
+
         storeName: store.store_name || '',
         storeId: store.store_id ?? '',
-        storeUrl: store.store_url || '',
+
         productName: product.product_name || '',
         productId: product.product_id ?? '',
         skuId: product.sku_id || '',
         quantity: product.product_count ?? '',
-        productPrice: amount(product.product_price?.amount, currency),
-        saleFee: amount(product.sale_fee?.amount, currency),
-        actualFee: amount(product.actual_fee?.amount, currency),
+
+        productPrice: amount(
+          product.product_price?.amount,
+          currency
+        ),
+
+        saleFee: amount(
+          product.sale_fee?.amount,
+          currency
+        ),
+
+        actualFee: amount(
+          product.actual_fee?.amount,
+          currency
+        ),
 
         // Use ONLY actual_shipping_fee from AliExpress.
-        // Never calculate it from the original shipping fee or discounts.
         shippingFeePaid: amount(
           product.actual_shipping_fee?.amount ?? '0.00',
           shippingCurrency
@@ -108,12 +297,18 @@ function getOrderRows(results: OrderResult[]) {
           order.order_amount?.amount,
           getCurrency(order.order_amount)
         ),
+
         amountPaid: amount(
           order.user_order_amount?.amount,
           getCurrency(order.user_order_amount)
         ),
+
         endReason: product.end_reason || '',
-        apiResult: 'Retrieved',
+        storeUrl: store.store_url || '',
+
+        apiResult: item.trackingMessage
+          ? `Order Retrieved; ${item.trackingMessage}`
+          : 'Order and Tracking Retrieved',
       });
     }
   }
@@ -125,10 +320,16 @@ const columns = [
   ['Order ID', 'orderId'],
   ['Order Created', 'created'],
   ['Order Status', 'orderStatus'],
-  ['Logistics Status', 'logisticsStatus'],
   ['Payment Date', 'paymentDate'],
+
+  ['Courier', 'courier'],
   ['Tracking Number', 'tracking'],
-  ['Logistics Service', 'logisticsService'],
+  ['Latest Tracking Event', 'latestTrackingEvent'],
+  ['Description', 'description'],
+  ['Delivery Date', 'deliveryDate'],
+  ['Delivery Days', 'deliveryDays'],
+  ['Delivery Performance', 'deliveryPerformance'],
+
   ['Store Name', 'storeName'],
   ['Store ID', 'storeId'],
   ['Product Name', 'productName'],
@@ -147,7 +348,9 @@ const columns = [
 ] as const;
 
 export default function OrderResultsPage() {
-  const [extracted, setExtracted] = useState<ExtractedData | null>(null);
+  const [extracted, setExtracted] =
+    useState<ExtractedData | null>(null);
+
   const [results, setResults] = useState<OrderResult[]>([]);
   const [pageLoading, setPageLoading] = useState(true);
 
@@ -156,7 +359,9 @@ export default function OrderResultsPage() {
 
     async function loadOrders() {
       try {
-        const saved = sessionStorage.getItem('aliexpress-extracted-orders');
+        const saved = sessionStorage.getItem(
+          'aliexpress-extracted-orders'
+        );
 
         if (!saved) {
           setPageLoading(false);
@@ -165,13 +370,15 @@ export default function OrderResultsPage() {
 
         const parsed: ExtractedData = JSON.parse(saved);
 
-        if (!parsed.accountId || !Array.isArray(parsed.orders)) {
+        if (
+          !parsed.accountId ||
+          !Array.isArray(parsed.orders)
+        ) {
           throw new Error(
-            'Invalid extracted order data. Please upload your Excel file again.'
+            'Invalid extracted order data. Upload your Excel file again.'
           );
         }
 
-        // Keep only unique, non-empty Order IDs from Excel.
         const uniqueOrders = Array.from(
           new Map(
             parsed.orders
@@ -197,37 +404,88 @@ export default function OrderResultsPage() {
 
         setPageLoading(false);
 
-        // Fetch every unique order directly from AliExpress.
         for (const order of uniqueOrders) {
           if (cancelled) return;
 
           try {
-            const response = await fetch('/api/aliexpress/order-details', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({
-                accountId: parsed.accountId,
-                orderId: order.orderId,
-              }),
-            });
+            // FIRST: Get order and product information.
+            const orderResponse = await fetch(
+              '/api/aliexpress/order-details',
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                  accountId: parsed.accountId,
+                  orderId: order.orderId,
+                }),
+              }
+            );
 
-            const apiResponse = await response.json();
+            const orderApi = await orderResponse.json();
 
-            if (cancelled) return;
-
-            if (!response.ok || apiResponse.success !== true) {
+            if (!orderResponse.ok || orderApi.success !== true) {
               throw new Error(
-                apiResponse.message || `API request failed (${response.status})`
+                orderApi.message ||
+                `Order API failed (${orderResponse.status})`
               );
             }
 
-            const orderData = apiResponse.data?.result;
+            const orderData = orderApi.data?.result;
 
             if (!orderData) {
-              throw new Error('AliExpress returned no order details.');
+              throw new Error(
+                'AliExpress returned no order details.'
+              );
             }
+
+            if (cancelled) return;
+
+            // SECOND: Get tracking information.
+            // Tracking failure does not discard successful order data.
+            let trackingData: any = undefined;
+            let trackingMessage = '';
+
+            try {
+              const trackingResponse = await fetch(
+                '/api/aliexpress/order-tracking',
+                {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                  },
+                  body: JSON.stringify({
+                    accountId: parsed.accountId,
+                    orderId: order.orderId,
+                    language: 'en_US',
+                  }),
+                }
+              );
+
+              const trackingApi = await trackingResponse.json();
+
+              if (!trackingResponse.ok || trackingApi.success !== true) {
+                trackingMessage =
+                  trackingApi.message ||
+                  `Tracking API failed (${trackingResponse.status})`;
+              } else {
+                trackingData = trackingApi;
+
+                if (trackingApi.data?.result?.ret !== true) {
+                  trackingMessage =
+                    trackingApi.data?.result?.msg ||
+                    'Tracking Data Not Found';
+                }
+              }
+            } catch (trackingError) {
+              trackingMessage =
+                trackingError instanceof Error
+                  ? trackingError.message
+                  : 'Tracking request failed.';
+            }
+
+            if (cancelled) return;
 
             setResults((previous) =>
               previous.map((item) =>
@@ -237,6 +495,8 @@ export default function OrderResultsPage() {
                       loading: false,
                       success: true,
                       data: orderData,
+                      trackingData,
+                      trackingMessage,
                     }
                   : item
               )
@@ -262,7 +522,11 @@ export default function OrderResultsPage() {
           }
         }
       } catch (error) {
-        console.error('Could not load AliExpress orders:', error);
+        console.error(
+          'Could not load AliExpress orders:',
+          error
+        );
+
         setPageLoading(false);
       }
     }
@@ -275,16 +539,27 @@ export default function OrderResultsPage() {
   }, []);
 
   const totalOrders = results.length;
-  const successfulOrders = results.filter((item) => item.success).length;
+
+  const successfulOrders = results.filter(
+    (item) => item.success
+  ).length;
+
   const failedOrders = results.filter(
     (item) => !item.success && !item.loading
   ).length;
-  const pendingOrders = results.filter((item) => item.loading).length;
+
+  const pendingOrders = results.filter(
+    (item) => item.loading
+  ).length;
 
   const spreadsheetRows = getOrderRows(results);
 
   if (pageLoading) {
-    return <main style={styles.page}>Loading AliExpress orders...</main>;
+    return (
+      <main style={styles.page}>
+        Loading AliExpress orders...
+      </main>
+    );
   }
 
   if (!extracted) {
@@ -292,8 +567,12 @@ export default function OrderResultsPage() {
       <main style={styles.page}>
         <section style={styles.panel}>
           <h2>No extracted orders found</h2>
-          <p>Please upload your Excel file and extract Order IDs first.</p>
-          <a href="/aliexpress/orders">Back to Order Management</a>
+          <p>
+            Please upload your Excel file and extract Order IDs first.
+          </p>
+          <a href="/aliexpress/orders">
+            Back to Order Management
+          </a>
         </section>
       </main>
     );
@@ -304,30 +583,47 @@ export default function OrderResultsPage() {
       <div style={styles.container}>
         <header style={styles.header}>
           <div>
-            <p style={styles.eyebrow}>ALIEXPRESS ORDER MANAGEMENT</p>
-            <h1 style={styles.heading}>Order Results</h1>
+            <p style={styles.eyebrow}>
+              ALIEXPRESS ORDER MANAGEMENT
+            </p>
+
+            <h1 style={styles.heading}>
+              Order Results
+            </h1>
+
             <p style={styles.subtitle}>
-              Order information retrieved directly from AliExpress.
+              Order and tracking information retrieved directly
+              from AliExpress.
             </p>
           </div>
 
-          <a href="/aliexpress/orders" style={styles.backButton}>
+          <a
+            href="/aliexpress/orders"
+            style={styles.backButton}
+          >
             Back to Upload
           </a>
         </header>
 
         <section style={styles.panel}>
-          <h2 style={styles.sectionTitle}>Extraction Summary</h2>
+          <h2 style={styles.sectionTitle}>
+            Extraction Summary
+          </h2>
 
           <div style={styles.summaryGrid}>
             <SummaryItem
               label="AliExpress Account"
-              value={extracted.accountLabel || extracted.accountId}
+              value={
+                extracted.accountLabel ||
+                extracted.accountId
+              }
             />
+
             <SummaryItem
               label="Excel File"
               value={extracted.fileName || ''}
             />
+
             <SummaryItem
               label="Unique Order IDs"
               value={String(totalOrders)}
@@ -336,19 +632,37 @@ export default function OrderResultsPage() {
         </section>
 
         <section style={styles.statsGrid}>
-          <StatCard label="Total Orders" value={totalOrders} />
-          <StatCard label="Successful" value={successfulOrders} />
-          <StatCard label="Failed" value={failedOrders} />
-          <StatCard label="Remaining" value={pendingOrders} />
+          <StatCard
+            label="Total Orders"
+            value={totalOrders}
+          />
+
+          <StatCard
+            label="Successful"
+            value={successfulOrders}
+          />
+
+          <StatCard
+            label="Failed"
+            value={failedOrders}
+          />
+
+          <StatCard
+            label="Remaining"
+            value={pendingOrders}
+          />
         </section>
 
         <section style={styles.panel}>
           <div style={styles.resultsHeader}>
             <div>
-              <h2 style={styles.sectionTitle}>AliExpress Order Spreadsheet</h2>
+              <h2 style={styles.sectionTitle}>
+                AliExpress Order Spreadsheet
+              </h2>
+
               <p style={styles.subtitle}>
-                Each product appears on its own row. All order details come
-                from the AliExpress API.
+                Each product appears on its own row.
+                Order and tracking information comes from AliExpress.
               </p>
             </div>
 
@@ -365,6 +679,7 @@ export default function OrderResultsPage() {
                 <thead>
                   <tr>
                     <th style={styles.th}>#</th>
+
                     {columns.map(([label]) => (
                       <th key={label} style={styles.th}>
                         {label}
@@ -376,7 +691,9 @@ export default function OrderResultsPage() {
                 <tbody>
                   {spreadsheetRows.map((row, index) => (
                     <tr key={`${row.orderId}-${index}`}>
-                      <td style={styles.rowNumber}>{index + 1}</td>
+                      <td style={styles.rowNumber}>
+                        {index + 1}
+                      </td>
 
                       {columns.map(([label, key]) => (
                         <td
@@ -392,6 +709,20 @@ export default function OrderResultsPage() {
                             >
                               Open Store
                             </a>
+                          ) : key === 'deliveryPerformance' ? (
+                            <span
+                              style={{
+                                fontWeight: 700,
+                                color:
+                                  row[key] === 'On Time'
+                                    ? '#15803d'
+                                    : row[key] === 'Late'
+                                      ? '#dc2626'
+                                      : '#64748b',
+                              }}
+                            >
+                              {String(row[key] ?? '')}
+                            </span>
                           ) : (
                             String(row[key] ?? '')
                           )}
@@ -405,9 +736,14 @@ export default function OrderResultsPage() {
           )}
 
           <p style={styles.note}>
-            Excel supplies only the AliExpress Order IDs. Product, store,
-            payment, tracking, shipping and status information is retrieved
-            from AliExpress. Tax and discount fields are not displayed.
+            Excel supplies only the AliExpress Order IDs.
+            Order, product, store, payment and tracking information
+            is retrieved from AliExpress. Delivery is Late only
+            when the confirmed delivery timestamp is more than
+            10 full days after the order creation timestamp.
+            Tracking information unavailable from AliExpress
+            does not cause the order details to be discarded.
+            Tax and discount columns are excluded.
             Shipping Fee Paid uses only actual_shipping_fee.amount.
           </p>
         </section>
@@ -453,10 +789,12 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '35px 20px',
     color: '#172033',
   },
+
   container: {
     maxWidth: '1600px',
     margin: '0 auto',
   },
+
   header: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -465,20 +803,24 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '20px',
     marginBottom: '25px',
   },
+
   eyebrow: {
     color: '#64748b',
     fontSize: '12px',
     fontWeight: 700,
     letterSpacing: '1px',
   },
+
   heading: {
     fontSize: '30px',
     margin: '8px 0',
   },
+
   subtitle: {
     color: '#64748b',
     fontSize: '14px',
   },
+
   backButton: {
     background: '#fff',
     border: '1px solid #dce2eb',
@@ -488,6 +830,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#172033',
     fontWeight: 600,
   },
+
   panel: {
     background: '#fff',
     border: '1px solid #e5eaf1',
@@ -495,15 +838,18 @@ const styles: Record<string, React.CSSProperties> = {
     padding: '24px',
     marginBottom: '22px',
   },
+
   sectionTitle: {
     fontSize: '19px',
     margin: '0 0 18px',
   },
+
   summaryGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))',
     gap: '22px',
   },
+
   smallLabel: {
     fontSize: '11px',
     fontWeight: 700,
@@ -512,28 +858,33 @@ const styles: Record<string, React.CSSProperties> = {
     margin: '0 0 7px',
     letterSpacing: '0.4px',
   },
+
   summaryValue: {
     fontSize: '14px',
     fontWeight: 600,
     overflowWrap: 'anywhere',
     margin: 0,
   },
+
   statsGrid: {
     display: 'grid',
     gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))',
     gap: '14px',
     marginBottom: '22px',
   },
+
   statCard: {
     background: '#fff',
     border: '1px solid #e5eaf1',
     borderRadius: '10px',
     padding: '18px',
   },
+
   statValue: {
     fontSize: '26px',
     margin: 0,
   },
+
   resultsHeader: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -542,24 +893,28 @@ const styles: Record<string, React.CSSProperties> = {
     gap: '12px',
     marginBottom: '18px',
   },
+
   count: {
     fontSize: '13px',
     color: '#475569',
     fontWeight: 600,
   },
+
   tableWrapper: {
     width: '100%',
     overflowX: 'auto',
     border: '1px solid #dce2eb',
     borderRadius: '8px',
   },
+
   table: {
     width: '100%',
-    minWidth: '1800px',
+    minWidth: '2200px',
     borderCollapse: 'collapse',
     fontSize: '13px',
     whiteSpace: 'nowrap',
   },
+
   th: {
     background: '#eaf0f7',
     color: '#334155',
@@ -571,6 +926,7 @@ const styles: Record<string, React.CSSProperties> = {
     top: 0,
     zIndex: 1,
   },
+
   rowNumber: {
     background: '#f8fafc',
     padding: '11px 12px',
@@ -578,6 +934,7 @@ const styles: Record<string, React.CSSProperties> = {
     textAlign: 'center',
     color: '#64748b',
   },
+
   td: {
     padding: '11px 14px',
     borderBottom: '1px solid #edf0f5',
@@ -586,6 +943,7 @@ const styles: Record<string, React.CSSProperties> = {
     overflow: 'hidden',
     textOverflow: 'ellipsis',
   },
+
   note: {
     color: '#64748b',
     fontSize: '12px',
