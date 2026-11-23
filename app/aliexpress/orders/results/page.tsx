@@ -38,6 +38,19 @@ interface OrderResult {
   data?: any;
 }
 
+function normalizeHeader(value: unknown): string {
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
+}
+
+const excludedHeaders = new Set([
+  'ebayorderearning',
+  'profit',
+  'column11',
+  ...Array.from({ length: 16 }, (_, index) => `column${index + 16}`),
+]);
+
 export default function OrderResultsPage() {
   const [extracted, setExtracted] = useState<ExtractedData | null>(null);
   const [results, setResults] = useState<OrderResult[]>([]);
@@ -206,6 +219,20 @@ export default function OrderResultsPage() {
     );
   }
 
+  // Determine which columns are allowed to appear in the Results table.
+  // This also filters old data already stored in sessionStorage.
+  const visibleColumnIndexes = extracted.columns
+    .map((column, index) => ({
+      index,
+      normalizedHeader: normalizeHeader(
+        column || `Column ${index + 1}`
+      ),
+    }))
+    .filter(
+      ({ normalizedHeader }) => !excludedHeaders.has(normalizedHeader)
+    )
+    .map(({ index }) => index);
+
   // Match each Excel row to its corresponding API result.
   const resultMap = new Map(results.map((result) => [result.orderId, result]));
 
@@ -309,11 +336,17 @@ export default function OrderResultsPage() {
                 <thead>
                   <tr>
                     <th style={styles.rowNumberHeader}>#</th>
-                    {extracted.columns.map((column, index) => (
-                      <th key={`${column}-${index}`} style={styles.th}>
-                        {column || `Column ${index + 1}`}
+
+                    {visibleColumnIndexes.map((columnIndex) => (
+                      <th
+                        key={`${extracted.columns[columnIndex]}-${columnIndex}`}
+                        style={styles.th}
+                      >
+                        {extracted.columns[columnIndex] ||
+                          `Column ${columnIndex + 1}`}
                       </th>
                     ))}
+
                     <th style={styles.th}>API Result</th>
                   </tr>
                 </thead>
@@ -325,25 +358,29 @@ export default function OrderResultsPage() {
                         {rowIndex + 1}
                       </td>
 
-                      {row.cells.map((cell, cellIndex) => (
-                        <td
-                          key={cellIndex}
-                          style={{
-                            ...styles.td,
-                            ...(cellIndex === extracted.trackingIndex
-                              ? styles.trackingCell
-                              : {}),
-                            ...(cellIndex === extracted.statusIndex
-                              ? styles.statusCell
-                              : {}),
-                          }}
-                          title={String(cell ?? '')}
-                        >
-                          {cell === null || cell === undefined
-                            ? ''
-                            : String(cell)}
-                        </td>
-                      ))}
+                      {visibleColumnIndexes.map((cellIndex) => {
+                        const cell = row.cells[cellIndex];
+
+                        return (
+                          <td
+                            key={cellIndex}
+                            style={{
+                              ...styles.td,
+                              ...(cellIndex === extracted.trackingIndex
+                                ? styles.trackingCell
+                                : {}),
+                              ...(cellIndex === extracted.statusIndex
+                                ? styles.statusCell
+                                : {}),
+                            }}
+                            title={String(cell ?? '')}
+                          >
+                            {cell === null || cell === undefined
+                              ? ''
+                              : String(cell)}
+                          </td>
+                        );
+                      })}
 
                       <td style={styles.td}>
                         {row.result?.loading ? (
@@ -367,10 +404,10 @@ export default function OrderResultsPage() {
           )}
 
           <p style={styles.tableNote}>
-            The original Excel data is kept unchanged. Tracking and Status are
-            filled from the AliExpress response when available. If an API
-            request fails, the row remains visible and its original data is
-            preserved.
+            The excluded columns are hidden from this Results table.
+            Tracking and Status are filled from the AliExpress response when
+            available. If an API request fails, the row remains visible and
+            its other original data is preserved.
           </p>
         </section>
       </div>
