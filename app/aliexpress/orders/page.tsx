@@ -24,10 +24,7 @@ function normalizeHeader(value: unknown): string {
     .replace(/[^a-z0-9]/g, '');
 }
 
-function parseExcelDate(
-  value: unknown,
-  fallbackYear: number
-): string | null {
+function parseExcelDate(value: unknown, fallbackYear: number): string | null {
   if (value instanceof Date && !isNaN(value.getTime())) {
     return [
       value.getFullYear(),
@@ -47,10 +44,8 @@ function parseExcelDate(
   }
 
   const text = String(value ?? '').trim();
-
   if (!text) return null;
 
-  // yyyy-mm-dd or yyyy/mm/dd
   let match = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
 
   if (match) {
@@ -60,7 +55,6 @@ function parseExcelDate(
     )}`;
   }
 
-  // dd/mm/yyyy or dd-mm-yyyy
   match = text.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
 
   if (match) {
@@ -71,28 +65,14 @@ function parseExcelDate(
   }
 
   const monthNames = [
-    'jan',
-    'feb',
-    'mar',
-    'apr',
-    'may',
-    'jun',
-    'jul',
-    'aug',
-    'sep',
-    'oct',
-    'nov',
-    'dec',
+    'jan', 'feb', 'mar', 'apr', 'may', 'jun',
+    'jul', 'aug', 'sep', 'oct', 'nov', 'dec',
   ];
 
-  // dd-MMM-yyyy or dd-MMM-yy
   match = text.match(/^(\d{1,2})[-/\s]([A-Za-z]{3,})[-/\s](\d{2,4})$/);
 
   if (match) {
-    const month = monthNames.indexOf(
-      match[2].slice(0, 3).toLowerCase()
-    );
-
+    const month = monthNames.indexOf(match[2].slice(0, 3).toLowerCase());
     let year = Number(match[3]);
 
     if (year < 100) {
@@ -106,13 +86,10 @@ function parseExcelDate(
     }
   }
 
-  // dd-MMM without year, e.g. 20 Nov
   match = text.match(/^(\d{1,2})[-/\s]([A-Za-z]{3,})$/);
 
   if (match) {
-    const month = monthNames.indexOf(
-      match[2].slice(0, 3).toLowerCase()
-    );
+    const month = monthNames.indexOf(match[2].slice(0, 3).toLowerCase());
 
     if (month !== -1) {
       return `${fallbackYear}-${String(month + 1).padStart(2, '0')}-${String(
@@ -154,9 +131,7 @@ export default function AliExpressOrdersPage() {
         }
       } catch (err) {
         setError(
-          err instanceof Error
-            ? err.message
-            : 'Could not load accounts'
+          err instanceof Error ? err.message : 'Could not load accounts'
         );
       } finally {
         setLoading(false);
@@ -167,9 +142,7 @@ export default function AliExpressOrdersPage() {
   }, []);
 
   async function extractOrders() {
-    if (!file || !startDate || !endDate || !selectedAccount) {
-      return;
-    }
+    if (!file || !startDate || !endDate || !selectedAccount) return;
 
     setProcessing(true);
     setError('');
@@ -190,59 +163,94 @@ export default function AliExpressOrdersPage() {
 
       const worksheet = workbook.Sheets[firstSheetName];
 
-      const rows = XLSX.utils.sheet_to_json(worksheet, {
+      const matrix = XLSX.utils.sheet_to_json(worksheet, {
         header: 1,
         defval: '',
         raw: false,
       }) as unknown[][];
 
-      if (rows.length < 2) {
+      if (matrix.length < 2) {
         throw new Error('The Excel sheet has no order data.');
       }
 
-      const headers = rows[0].map(normalizeHeader);
+      const originalHeaders = matrix[0].map((value) =>
+        String(value ?? '').trim()
+      );
+
+      const headers = originalHeaders.map(normalizeHeader);
 
       const dateIndex = headers.indexOf('date');
-
       const orderIdIndex = headers.indexOf('aliexpressorderid');
 
       if (dateIndex === -1) {
-        throw new Error(
-          'Could not find the "Date" column in your Excel file.'
-        );
+        throw new Error('Could not find the "Date" column.');
       }
 
       if (orderIdIndex === -1) {
-        throw new Error(
-          'Could not find the "Ali Express order ID" column in your Excel file.'
-        );
+        throw new Error('Could not find the "Ali Express order ID" column.');
       }
+
+      // Preserve every original Excel column.
+      const columns = [...originalHeaders];
+
+      // Add Tracking and Status columns if they do not already exist.
+      let trackingIndex = headers.indexOf('tracking');
+
+      if (trackingIndex === -1) {
+        trackingIndex = columns.length;
+        columns.push('Tracking');
+      }
+
+      let statusIndex = headers.indexOf('status');
+
+      if (statusIndex === -1) {
+        statusIndex = columns.length;
+        columns.push('Status');
+      }
+
+      const matchingRows: {
+        excelRowNumber: number;
+        cells: unknown[];
+        orderId: string;
+        date: string;
+      }[] = [];
 
       const uniqueOrders = new Map<string, ExtractedOrder>();
 
       let matchingDateRows = 0;
-      let rowsWithOrderIds = 0;
 
-      for (const row of rows.slice(1)) {
+      for (let index = 1; index < matrix.length; index++) {
+        const originalRow = matrix[index];
         const orderDate = parseExcelDate(
-          row[dateIndex],
+          originalRow[dateIndex],
           Number(startDate.substring(0, 4))
         );
 
-        const orderId = String(row[orderIdIndex] ?? '').trim();
-
-        if (!orderDate) continue;
-
-        if (orderDate < startDate || orderDate > endDate) {
+        if (!orderDate || orderDate < startDate || orderDate > endDate) {
           continue;
         }
 
         matchingDateRows++;
 
+        const orderId = String(originalRow[orderIdIndex] ?? '').trim();
+
         if (!orderId) continue;
 
-        rowsWithOrderIds++;
+        // Preserve all cells, including blank cells.
+        const cells = [...originalRow];
 
+        while (cells.length < columns.length) {
+          cells.push('');
+        }
+
+        matchingRows.push({
+          excelRowNumber: index + 1,
+          cells,
+          orderId,
+          date: orderDate,
+        });
+
+        // Only request each unique AliExpress ID once.
         if (!uniqueOrders.has(orderId)) {
           uniqueOrders.set(orderId, {
             orderId,
@@ -253,18 +261,28 @@ export default function AliExpressOrdersPage() {
 
       const extractedOrders = Array.from(uniqueOrders.values());
 
+      if (matchingRows.length === 0) {
+        throw new Error(
+          'No orders with AliExpress order IDs were found in the selected date range.'
+        );
+      }
+
       const savedResults = {
         accountId: selectedAccount,
         accountLabel:
           accounts.find(
-            account =>
-              account.aliexpress_user_id === selectedAccount
+            (account) => account.aliexpress_user_id === selectedAccount
           )?.account_label || selectedAccount,
         fileName: file.name,
+        sheetName: firstSheetName,
         startDate,
         endDate,
         matchingDateRows,
-        rowsWithOrderIds,
+        rowsWithOrderIds: matchingRows.length,
+        columns,
+        trackingIndex,
+        statusIndex,
+        rows: matchingRows,
         orders: extractedOrders,
       };
 
@@ -276,9 +294,7 @@ export default function AliExpressOrdersPage() {
       window.location.href = '/aliexpress/orders/results';
     } catch (err) {
       setError(
-        err instanceof Error
-          ? err.message
-          : 'Could not read the Excel file.'
+        err instanceof Error ? err.message : 'Could not read the Excel file.'
       );
     } finally {
       setProcessing(false);
@@ -295,9 +311,7 @@ export default function AliExpressOrdersPage() {
   return (
     <main className={styles.page}>
       <section className={styles.panel}>
-        <div className={styles.eyebrow}>
-          ALIEXPRESS INTEGRATION
-        </div>
+        <div className={styles.eyebrow}>ALIEXPRESS INTEGRATION</div>
 
         <h1>Order Management</h1>
 
@@ -312,17 +326,13 @@ export default function AliExpressOrdersPage() {
 
           {loading && <p>Loading accounts...</p>}
 
-          {error && (
-            <p style={{ color: 'red' }}>{error}</p>
-          )}
+          {error && <p style={{ color: 'red' }}>{error}</p>}
 
           {!loading && !error && accounts.length === 0 && (
-            <p>
-              No connected accounts. Please authorize an account first.
-            </p>
+            <p>No connected accounts. Please authorize an account first.</p>
           )}
 
-          {accounts.map(account => (
+          {accounts.map((account) => (
             <label
               key={account.aliexpress_user_id}
               className={`${styles.accountOption} ${
@@ -335,9 +345,7 @@ export default function AliExpressOrdersPage() {
                 type="radio"
                 name="aliexpressAccount"
                 value={account.aliexpress_user_id}
-                checked={
-                  selectedAccount === account.aliexpress_user_id
-                }
+                checked={selectedAccount === account.aliexpress_user_id}
                 onChange={() =>
                   setSelectedAccount(account.aliexpress_user_id)
                 }
@@ -360,33 +368,23 @@ export default function AliExpressOrdersPage() {
 
           <div className={styles.dateGrid}>
             <div>
-              <label className={styles.fieldLabel}>
-                Start Date
-              </label>
-
+              <label className={styles.fieldLabel}>Start Date</label>
               <input
                 className={styles.dateInput}
                 type="date"
                 value={startDate}
-                onChange={event =>
-                  setStartDate(event.target.value)
-                }
+                onChange={(event) => setStartDate(event.target.value)}
               />
             </div>
 
             <div>
-              <label className={styles.fieldLabel}>
-                End Date
-              </label>
-
+              <label className={styles.fieldLabel}>End Date</label>
               <input
                 className={styles.dateInput}
                 type="date"
                 min={startDate || undefined}
                 value={endDate}
-                onChange={event =>
-                  setEndDate(event.target.value)
-                }
+                onChange={(event) => setEndDate(event.target.value)}
               />
             </div>
           </div>
@@ -416,7 +414,7 @@ export default function AliExpressOrdersPage() {
               className={styles.fileInput}
               type="file"
               accept=".xlsx,.xls"
-              onChange={event =>
+              onChange={(event) =>
                 setFile(event.target.files?.[0] || null)
               }
             />
@@ -429,9 +427,7 @@ export default function AliExpressOrdersPage() {
           )}
         </div>
 
-        {error && (
-          <p style={{ color: 'red' }}>{error}</p>
-        )}
+        {error && <p style={{ color: 'red' }}>{error}</p>}
 
         <button
           type="button"
@@ -440,26 +436,19 @@ export default function AliExpressOrdersPage() {
           onClick={extractOrders}
           style={{
             opacity: canContinue && !processing ? 1 : 0.5,
-            cursor:
-              canContinue && !processing
-                ? 'pointer'
-                : 'not-allowed',
+            cursor: canContinue && !processing ? 'pointer' : 'not-allowed',
           }}
         >
-          {processing
-            ? 'Reading Excel File...'
-            : 'Extract Order IDs'}
+          {processing ? 'Reading Excel File...' : 'Extract Order IDs'}
         </button>
 
         <p className={styles.mutedText}>
-          This step only extracts order IDs from your Excel file.
-          It does not contact AliExpress yet.
+          Your original Excel rows and columns will be preserved on the
+          Results page. Each unique AliExpress order ID will be retrieved once.
         </p>
 
         <p>
-          <Link href="/aliexpress/orders/results">
-            View Previous Results
-          </Link>
+          <Link href="/aliexpress/orders/results">View Previous Results</Link>
         </p>
       </section>
     </main>

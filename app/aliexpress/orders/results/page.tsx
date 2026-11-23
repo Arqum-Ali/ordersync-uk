@@ -8,12 +8,24 @@ interface ExtractedOrder {
   date: string;
 }
 
+interface ExcelRow {
+  excelRowNumber: number;
+  cells: unknown[];
+  orderId: string;
+  date: string;
+}
+
 interface ExtractedData {
   accountId: string;
   accountLabel: string;
   fileName: string;
+  sheetName?: string;
   startDate: string;
   endDate: string;
+  columns: string[];
+  trackingIndex: number;
+  statusIndex: number;
+  rows: ExcelRow[];
   orders: ExtractedOrder[];
 }
 
@@ -32,11 +44,11 @@ export default function OrderResultsPage() {
   const [pageLoading, setPageLoading] = useState(true);
 
   useEffect(() => {
+    let cancelled = false;
+
     const loadOrders = async () => {
       try {
-        const saved = sessionStorage.getItem(
-          'aliexpress-extracted-orders'
-        );
+        const saved = sessionStorage.getItem('aliexpress-extracted-orders');
 
         if (!saved) {
           setPageLoading(false);
@@ -45,38 +57,45 @@ export default function OrderResultsPage() {
 
         const parsed: ExtractedData = JSON.parse(saved);
 
+        if (!parsed.columns || !parsed.rows || !parsed.orders) {
+          throw new Error(
+            'This is an older result format. Please upload your Excel file again.'
+          );
+        }
+
+        if (cancelled) return;
+
         setExtracted(parsed);
 
-        const initialResults: OrderResult[] = parsed.orders.map(
-          (order) => ({
-            orderId: order.orderId,
-            date: order.date,
-            loading: true,
-            success: false,
-          })
-        );
+        const initialResults: OrderResult[] = parsed.orders.map((order) => ({
+          orderId: order.orderId,
+          date: order.date,
+          loading: true,
+          success: false,
+        }));
 
         setResults(initialResults);
         setPageLoading(false);
 
-        // Process orders one by one.
+        // Retrieve each unique AliExpress order ID once.
         for (const order of parsed.orders) {
+          if (cancelled) return;
+
           try {
-            const response = await fetch(
-              '/api/aliexpress/order-details',
-              {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                  accountId: parsed.accountId,
-                  orderId: order.orderId,
-                }),
-              }
-            );
+            const response = await fetch('/api/aliexpress/order-details', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                accountId: parsed.accountId,
+                orderId: order.orderId,
+              }),
+            });
 
             const data = await response.json();
+
+            if (cancelled) return;
 
             setResults((previous) =>
               previous.map((item) =>
@@ -94,6 +113,8 @@ export default function OrderResultsPage() {
               )
             );
           } catch (error) {
+            if (cancelled) return;
+
             setResults((previous) =>
               previous.map((item) =>
                 item.orderId === order.orderId
@@ -118,37 +139,55 @@ export default function OrderResultsPage() {
     };
 
     loadOrders();
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const getLogistics = (order: OrderResult) => {
-    return Array.isArray(order.data?.logistics_info_list)
-      ? order.data.logistics_info_list
-      : [];
+  const getLogistics = (result?: OrderResult) => {
+    if (!result?.success || !Array.isArray(result.data?.logistics_info_list)) {
+      return [];
+    }
+
+    return result.data.logistics_info_list;
   };
 
-  const getStatus = (value?: string) => {
-    if (!value) return 'Not available';
+  const getTracking = (result?: OrderResult): string => {
+    const logistics = getLogistics(result);
 
-    return value.replace(/_/g, ' ');
+    return (
+      logistics
+        .map((item: any) => item.logistics_no)
+        .filter(Boolean)
+        .join(', ') || ''
+    );
+  };
+
+  const getStatus = (result?: OrderResult): string => {
+    if (!result) return '';
+    if (result.loading) return 'Fetching...';
+    if (!result.success) return 'Failed';
+
+    const status =
+      result.data?.logistics_status ||
+      result.data?.order_status ||
+      '';
+
+    return String(status).replace(/_/g, ' ');
   };
 
   const totalOrders = results.length;
-  const completedOrders = results.filter(
-    (order) => order.success
-  ).length;
+  const completedOrders = results.filter((order) => order.success).length;
   const failedOrders = results.filter(
     (order) => !order.success && !order.loading
   ).length;
-  const pendingOrders = results.filter(
-    (order) => order.loading
-  ).length;
+  const pendingOrders = results.filter((order) => order.loading).length;
 
   if (pageLoading) {
     return (
       <main style={styles.page}>
-        <div style={styles.panel}>
-          Loading extracted orders...
-        </div>
+        <div style={styles.panel}>Loading extracted orders...</div>
       </main>
     );
   }
@@ -158,9 +197,7 @@ export default function OrderResultsPage() {
       <main style={styles.page}>
         <div style={styles.panel}>
           <h2>No extracted orders found</h2>
-          <p>
-            Please upload your Excel file and extract order IDs first.
-          </p>
+          <p>Please upload your Excel file and extract order IDs first.</p>
           <a href="/aliexpress/orders" style={styles.link}>
             Back to Order Management
           </a>
@@ -169,16 +206,44 @@ export default function OrderResultsPage() {
     );
   }
 
+  // Match each Excel row to its corresponding API result.
+  const resultMap = new Map(results.map((result) => [result.orderId, result]));
+
+  const displayRows = extracted.rows.map((row) => {
+    const result = resultMap.get(row.orderId);
+    const cells = [...row.cells];
+
+    while (cells.length < extracted.columns.length) {
+      cells.push('');
+    }
+
+    const tracking = getTracking(result);
+    const status = getStatus(result);
+
+    if (tracking) {
+      cells[extracted.trackingIndex] = tracking;
+    }
+
+    if (status) {
+      cells[extracted.statusIndex] = status;
+    }
+
+    return {
+      ...row,
+      cells,
+      result,
+    };
+  });
+
   return (
     <main style={styles.page}>
       <div style={styles.container}>
-
         <div style={styles.header}>
           <div>
             <p style={styles.eyebrow}>ALIEXPRESS ORDER MANAGEMENT</p>
             <h1 style={styles.heading}>Order Results</h1>
             <p style={styles.subtitle}>
-              Order information retrieved directly from AliExpress.
+              Your original Excel data with AliExpress tracking and status.
             </p>
           </div>
 
@@ -187,7 +252,6 @@ export default function OrderResultsPage() {
           </a>
         </div>
 
-        {/* Upload information */}
         <section style={styles.panel}>
           <h2 style={styles.sectionTitle}>Extraction Summary</h2>
 
@@ -197,14 +261,16 @@ export default function OrderResultsPage() {
               value={extracted.accountLabel || extracted.accountId}
             />
 
-            <SummaryItem
-              label="Excel File"
-              value={extracted.fileName}
-            />
+            <SummaryItem label="Excel File" value={extracted.fileName} />
 
             <SummaryItem
               label="Date Range"
               value={`${extracted.startDate} to ${extracted.endDate}`}
+            />
+
+            <SummaryItem
+              label="Excel Rows"
+              value={String(extracted.rows.length)}
             />
 
             <SummaryItem
@@ -214,7 +280,6 @@ export default function OrderResultsPage() {
           </div>
         </section>
 
-        {/* Processing summary */}
         <section style={styles.statsGrid}>
           <StatCard label="Total Orders" value={totalOrders} />
           <StatCard label="Successful" value={completedOrders} />
@@ -222,178 +287,91 @@ export default function OrderResultsPage() {
           <StatCard label="Remaining" value={pendingOrders} />
         </section>
 
-        {/* Order results */}
         <section style={styles.panel}>
           <div style={styles.resultsHeader}>
             <div>
-              <h2 style={styles.sectionTitle}>AliExpress Order Details</h2>
+              <h2 style={styles.sectionTitle}>Excel Order Spreadsheet</h2>
               <p style={styles.subtitle}>
-                Each order is retrieved separately from AliExpress.
+                All matching rows from your uploaded Excel file.
               </p>
             </div>
 
             <span style={styles.count}>
-              {completedOrders} / {totalOrders} completed
+              {completedOrders} / {totalOrders} API requests completed
             </span>
           </div>
 
-          {results.length === 0 ? (
-            <p>No order IDs were found in your Excel file.</p>
+          {displayRows.length === 0 ? (
+            <p>No order rows were found.</p>
           ) : (
-            <div style={styles.orderList}>
-              {results.map((order) => {
-                const logistics = getLogistics(order);
+            <div style={styles.tableWrapper}>
+              <table style={styles.table}>
+                <thead>
+                  <tr>
+                    <th style={styles.rowNumberHeader}>#</th>
+                    {extracted.columns.map((column, index) => (
+                      <th key={`${column}-${index}`} style={styles.th}>
+                        {column || `Column ${index + 1}`}
+                      </th>
+                    ))}
+                    <th style={styles.th}>API Result</th>
+                  </tr>
+                </thead>
 
-                return (
-                  <article
-                    key={order.orderId}
-                    style={styles.orderCard}
-                  >
-                    <div style={styles.orderHeader}>
-                      <div>
-                        <p style={styles.smallLabel}>ORDER ID</p>
-                        <h3 style={styles.orderId}>
-                          {order.orderId}
-                        </h3>
-                        <p style={styles.date}>
-                          Excel Date: {order.date}
-                        </p>
-                      </div>
+                <tbody>
+                  {displayRows.map((row, rowIndex) => (
+                    <tr key={`${row.excelRowNumber}-${row.orderId}`}>
+                      <td style={styles.rowNumberCell}>
+                        {rowIndex + 1}
+                      </td>
 
-                      <div>
-                        {order.loading ? (
-                          <span style={styles.loadingBadge}>
-                            Fetching...
-                          </span>
-                        ) : order.success ? (
-                          <span style={styles.successBadge}>
-                            Retrieved
-                          </span>
+                      {row.cells.map((cell, cellIndex) => (
+                        <td
+                          key={cellIndex}
+                          style={{
+                            ...styles.td,
+                            ...(cellIndex === extracted.trackingIndex
+                              ? styles.trackingCell
+                              : {}),
+                            ...(cellIndex === extracted.statusIndex
+                              ? styles.statusCell
+                              : {}),
+                          }}
+                          title={String(cell ?? '')}
+                        >
+                          {cell === null || cell === undefined
+                            ? ''
+                            : String(cell)}
+                        </td>
+                      ))}
+
+                      <td style={styles.td}>
+                        {row.result?.loading ? (
+                          <span style={styles.loadingBadge}>Fetching...</span>
+                        ) : row.result?.success ? (
+                          <span style={styles.successBadge}>Retrieved</span>
                         ) : (
-                          <span style={styles.errorBadge}>
-                            Failed
+                          <span
+                            style={styles.errorBadge}
+                            title={row.result?.message || 'Request failed'}
+                          >
+                            {row.result ? 'Failed' : 'Pending'}
                           </span>
                         )}
-                      </div>
-                    </div>
-
-                    {order.loading && (
-                      <p style={styles.muted}>
-                        Retrieving order details from AliExpress...
-                      </p>
-                    )}
-
-                    {!order.success && !order.loading && (
-                      <div style={styles.errorBox}>
-                        <strong>Request failed</strong>
-                        <p>{order.message}</p>
-                      </div>
-                    )}
-
-                    {order.success && order.data && (
-                      <>
-                        <div style={styles.detailsGrid}>
-                          <Detail
-                            label="Order Status"
-                            value={getStatus(order.data.order_status)}
-                          />
-
-                          <Detail
-                            label="Logistics Status"
-                            value={getStatus(order.data.logistics_status)}
-                          />
-
-                          <Detail
-                            label="Order Created"
-                            value={order.data.gmt_create || 'Not available'}
-                          />
-
-                          <Detail
-                            label="Order Amount"
-                            value={
-                              order.data.order_amount
-                                ? `${order.data.order_amount.currency_code || ''} ${order.data.order_amount.amount || ''}`
-                                : 'Not available'
-                            }
-                          />
-
-                          <Detail
-                            label="Store Name"
-                            value={
-                              order.data.store_info?.store_name ||
-                              'Not available'
-                            }
-                          />
-
-                          <Detail
-                            label="Store ID"
-                            value={
-                              order.data.store_info?.store_id
-                                ? String(order.data.store_info.store_id)
-                                : 'Not available'
-                            }
-                          />
-                        </div>
-
-                        <div style={styles.logisticsSection}>
-                          <h4 style={styles.logisticsTitle}>
-                            Tracking & Logistics Information
-                          </h4>
-
-                          {logistics.length === 0 ? (
-                            <p style={styles.muted}>
-                              No logistics information returned for this order.
-                            </p>
-                          ) : (
-                            logistics.map((item: any, index: number) => (
-                              <div
-                                key={index}
-                                style={styles.logisticsCard}
-                              >
-                                <Detail
-                                  label="Tracking Number"
-                                  value={
-                                    item.logistics_no || 'Not available'
-                                  }
-                                />
-
-                                <Detail
-                                  label="Courier / Service"
-                                  value={
-                                    item.logistics_service || 'Not available'
-                                  }
-                                />
-
-                                <Detail
-                                  label="Logistics Information"
-                                  value={JSON.stringify(item)}
-                                />
-                              </div>
-                            ))
-                          )}
-                        </div>
-
-                        {Array.isArray(order.data.child_order_list) && (
-                          <details style={styles.rawDetails}>
-                            <summary>
-                              View Child Order Details
-                            </summary>
-                            <pre style={styles.rawData}>
-                              {JSON.stringify(
-                                order.data.child_order_list,
-                                null,
-                                2
-                              )}
-                            </pre>
-                          </details>
-                        )}
-                      </>
-                    )}
-                  </article>
-                );
-              })}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
           )}
+
+          <p style={styles.tableNote}>
+            The original Excel data is kept unchanged. Tracking and Status are
+            filled from the AliExpress response when available. If an API
+            request fails, the row remains visible and its original data is
+            preserved.
+          </p>
         </section>
       </div>
     </main>
@@ -430,21 +408,6 @@ function StatCard({
   );
 }
 
-function Detail({
-  label,
-  value,
-}: {
-  label: string;
-  value: string;
-}) {
-  return (
-    <div style={styles.detail}>
-      <p style={styles.smallLabel}>{label}</p>
-      <p style={styles.detailValue}>{value}</p>
-    </div>
-  );
-}
-
 const styles: Record<string, React.CSSProperties> = {
   page: {
     minHeight: '100vh',
@@ -453,7 +416,7 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#172033',
   },
   container: {
-    maxWidth: '1150px',
+    maxWidth: '1500px',
     margin: '0 auto',
   },
   header: {
@@ -539,124 +502,98 @@ const styles: Record<string, React.CSSProperties> = {
     alignItems: 'center',
     flexWrap: 'wrap',
     gap: '12px',
+    marginBottom: '18px',
   },
   count: {
     fontSize: '13px',
     color: '#475569',
     fontWeight: 600,
   },
-  orderList: {
-    display: 'grid',
-    gap: '18px',
+  tableWrapper: {
+    width: '100%',
+    overflowX: 'auto',
+    border: '1px solid #dce2eb',
+    borderRadius: '8px',
   },
-  orderCard: {
-    border: '1px solid #e5eaf1',
-    borderRadius: '10px',
-    padding: '20px',
-    background: '#fff',
+  table: {
+    width: '100%',
+    minWidth: '1100px',
+    borderCollapse: 'collapse',
+    fontSize: '13px',
+    whiteSpace: 'nowrap',
   },
-  orderHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    flexWrap: 'wrap',
-    gap: '12px',
-    paddingBottom: '17px',
+  rowNumberHeader: {
+    background: '#eaf0f7',
+    padding: '12px',
+    borderBottom: '1px solid #dce2eb',
+    textAlign: 'center',
+    color: '#475569',
+    position: 'sticky',
+    left: 0,
+    zIndex: 2,
+  },
+  th: {
+    background: '#eaf0f7',
+    color: '#334155',
+    textAlign: 'left',
+    padding: '12px 14px',
+    borderBottom: '1px solid #dce2eb',
+    fontWeight: 700,
+  },
+  rowNumberCell: {
+    background: '#f8fafc',
+    padding: '11px 12px',
     borderBottom: '1px solid #edf0f5',
-  },
-  orderId: {
-    fontSize: '18px',
-    margin: '0 0 5px',
-    overflowWrap: 'anywhere',
-  },
-  date: {
-    fontSize: '12px',
+    textAlign: 'center',
     color: '#64748b',
-    margin: 0,
+    position: 'sticky',
+    left: 0,
+    zIndex: 1,
+  },
+  td: {
+    padding: '11px 14px',
+    borderBottom: '1px solid #edf0f5',
+    color: '#334155',
+    maxWidth: '280px',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis',
+  },
+  trackingCell: {
+    color: '#075985',
+    fontWeight: 600,
+  },
+  statusCell: {
+    color: '#166534',
+    fontWeight: 600,
+  },
+  tableNote: {
+    color: '#64748b',
+    fontSize: '12px',
+    marginTop: '15px',
   },
   successBadge: {
     background: '#dcfce7',
     color: '#166534',
     borderRadius: '20px',
-    padding: '7px 12px',
-    fontSize: '12px',
+    padding: '6px 10px',
+    fontSize: '11px',
     fontWeight: 700,
   },
   errorBadge: {
     background: '#fee2e2',
     color: '#991b1b',
     borderRadius: '20px',
-    padding: '7px 12px',
-    fontSize: '12px',
+    padding: '6px 10px',
+    fontSize: '11px',
     fontWeight: 700,
   },
   loadingBadge: {
     background: '#e0f2fe',
     color: '#075985',
     borderRadius: '20px',
-    padding: '7px 12px',
-    fontSize: '12px',
+    padding: '6px 10px',
+    fontSize: '11px',
     fontWeight: 700,
-  },
-  muted: {
-    color: '#64748b',
-    fontSize: '13px',
-    marginTop: '16px',
-  },
-  errorBox: {
-    background: '#fff1f2',
-    border: '1px solid #fecdd3',
-    color: '#9f1239',
-    padding: '14px',
-    borderRadius: '8px',
-    marginTop: '16px',
-    fontSize: '13px',
-    overflowWrap: 'anywhere',
-  },
-  detailsGrid: {
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))',
-    gap: '20px',
-    padding: '20px 0',
-  },
-  detail: {
-    minWidth: 0,
-  },
-  detailValue: {
-    fontSize: '14px',
-    fontWeight: 600,
-    margin: 0,
-    overflowWrap: 'anywhere',
-  },
-  logisticsSection: {
-    borderTop: '1px solid #edf0f5',
-    paddingTop: '18px',
-  },
-  logisticsTitle: {
-    fontSize: '15px',
-    margin: '0 0 14px',
-  },
-  logisticsCard: {
-    background: '#f8fafc',
-    border: '1px solid #e5eaf1',
-    borderRadius: '8px',
-    padding: '15px',
-    display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
-    gap: '16px',
-    marginBottom: '10px',
-  },
-  rawDetails: {
-    marginTop: '18px',
-    fontSize: '13px',
-    color: '#475569',
-  },
-  rawData: {
-    background: '#f1f5f9',
-    padding: '14px',
-    borderRadius: '8px',
-    overflowX: 'auto',
-    fontSize: '12px',
   },
   link: {
     display: 'inline-block',
@@ -664,4 +601,3 @@ const styles: Record<string, React.CSSProperties> = {
     color: '#2563eb',
   },
 };
-
