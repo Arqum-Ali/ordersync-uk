@@ -19,7 +19,7 @@ export async function GET() {
     }
 
     const response = await fetch(
-      `${supabaseUrl}/rest/v1/aliexpress_accounts?select=account_label,aliexpress_user_id,connection_status,access_token_expires_at,updated_at&order=updated_at.desc`,
+      `${supabaseUrl}/rest/v1/aliexpress_accounts?select=account_label,email_label,aliexpress_user_id,connection_status,access_token_expires_at,updated_at&order=updated_at.desc`,
       {
         method: "GET",
         headers: {
@@ -50,7 +50,6 @@ export async function GET() {
       count: accounts.length,
       accounts,
     });
-
   } catch (error) {
     console.error("AliExpress accounts API error:", error);
 
