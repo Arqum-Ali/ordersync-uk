@@ -22,7 +22,10 @@ export default function CreateAliExpressOrderPage() {
     productId: "",
     quantity: "1",
     skuAttr: "",
-    fullName: "",
+
+    firstName: "",
+    lastName: "",
+
     address: "",
     address2: "",
     city: "",
@@ -31,6 +34,7 @@ export default function CreateAliExpressOrderPage() {
     country: "GB",
     mobile: "",
     phoneCountry: "44",
+
     currency: "GBP",
     payment: "manual",
   });
@@ -49,7 +53,8 @@ export default function CreateAliExpressOrderPage() {
         }
 
         const connected = (data.accounts || []).filter(
-          (account: Account) => account.connection_status === "connected"
+          (account: Account) =>
+            account.connection_status === "connected"
         );
 
         setAccounts(connected);
@@ -90,13 +95,35 @@ export default function CreateAliExpressOrderPage() {
       return;
     }
 
-    if (!Number.isInteger(Number(form.quantity)) || Number(form.quantity) < 1) {
+    if (
+      !Number.isInteger(Number(form.quantity)) ||
+      Number(form.quantity) < 1
+    ) {
       setError("Enter a valid product quantity.");
       return;
     }
 
+    const firstName = form.firstName.trim();
+    const lastName = form.lastName.trim();
+    const fullName = `${firstName} ${lastName}`.trim();
+
+    if (!firstName || !lastName) {
+      setError("Please enter both first name and last name.");
+      return;
+    }
+
+    if (fullName.length < 2 || fullName.length > 32) {
+      setError("Recipient name must be between 2 and 32 characters.");
+      return;
+    }
+
+    if (!/^[A-Z]{2}$/.test(form.country.trim().toUpperCase())) {
+      setError("Enter a valid two-letter country code.");
+      return;
+    }
+
     const confirmed = window.confirm(
-      "IMPORTANT: This request may create a real AliExpress order. Continue?"
+      "IMPORTANT: This request may create a REAL AliExpress order. Continue?"
     );
 
     if (!confirmed) return;
@@ -114,17 +141,23 @@ export default function CreateAliExpressOrderPage() {
           productId: form.productId,
           quantity: Number(form.quantity),
           skuAttr: form.skuAttr,
+
           address: {
-            full_name: form.fullName,
+            first_name: firstName,
+            last_name: lastName,
+            full_name: fullName,
+
             address: form.address,
             address2: form.address2,
             city: form.city,
             province: form.province,
-            country: form.country,
+            country: form.country.trim().toUpperCase(),
             zip: form.postcode,
+
             mobile_no: form.mobile,
             phone_country: form.phoneCountry,
           },
+
           currency: form.currency,
           payment: form.payment,
         }),
@@ -145,18 +178,20 @@ export default function CreateAliExpressOrderPage() {
   }
 
   return (
-    <main style={{
-      maxWidth: 900,
-      margin: "40px auto",
-      padding: 20,
-      fontFamily: "Arial, sans-serif"
-    }}>
+    <main
+      style={{
+        maxWidth: 900,
+        margin: "40px auto",
+        padding: 20,
+        fontFamily: "Arial, sans-serif",
+      }}
+    >
       <h1 style={{ fontSize: 28, fontWeight: 700 }}>
         Create AliExpress Order
       </h1>
 
       <p style={{ color: "#666", marginBottom: 25 }}>
-        Enter the product and customer delivery information.
+        Enter product and customer delivery information.
       </p>
 
       <form onSubmit={submitOrder}>
@@ -194,7 +229,9 @@ export default function CreateAliExpressOrderPage() {
           <Field label="AliExpress Product ID">
             <input
               value={form.productId}
-              onChange={(e) => updateField("productId", e.target.value)}
+              onChange={(e) =>
+                updateField("productId", e.target.value)
+              }
               style={inputStyle}
               placeholder="Enter product ID"
               required
@@ -207,7 +244,9 @@ export default function CreateAliExpressOrderPage() {
               min="1"
               step="1"
               value={form.quantity}
-              onChange={(e) => updateField("quantity", e.target.value)}
+              onChange={(e) =>
+                updateField("quantity", e.target.value)
+              }
               style={inputStyle}
               required
             />
@@ -216,9 +255,11 @@ export default function CreateAliExpressOrderPage() {
           <Field label="SKU Attribute / Variation">
             <input
               value={form.skuAttr}
-              onChange={(e) => updateField("skuAttr", e.target.value)}
+              onChange={(e) =>
+                updateField("skuAttr", e.target.value)
+              }
               style={inputStyle}
-              placeholder="Enter exact SKU attribute, if applicable"
+              placeholder="Enter exact SKU attribute"
             />
           </Field>
         </section>
@@ -226,11 +267,26 @@ export default function CreateAliExpressOrderPage() {
         <section style={sectionStyle}>
           <h2 style={headingStyle}>3. Customer Delivery Address</h2>
 
-          <Field label="Full Name">
+          <Field label="First Name">
             <input
-              value={form.fullName}
-              onChange={(e) => updateField("fullName", e.target.value)}
+              value={form.firstName}
+              onChange={(e) =>
+                updateField("firstName", e.target.value)
+              }
               style={inputStyle}
+              placeholder="Enter first name"
+              required
+            />
+          </Field>
+
+          <Field label="Last Name">
+            <input
+              value={form.lastName}
+              onChange={(e) =>
+                updateField("lastName", e.target.value)
+              }
+              style={inputStyle}
+              placeholder="Enter last name"
               required
             />
           </Field>
@@ -238,7 +294,9 @@ export default function CreateAliExpressOrderPage() {
           <Field label="Address">
             <input
               value={form.address}
-              onChange={(e) => updateField("address", e.target.value)}
+              onChange={(e) =>
+                updateField("address", e.target.value)
+              }
               style={inputStyle}
               required
             />
@@ -247,7 +305,9 @@ export default function CreateAliExpressOrderPage() {
           <Field label="Address Line 2">
             <input
               value={form.address2}
-              onChange={(e) => updateField("address2", e.target.value)}
+              onChange={(e) =>
+                updateField("address2", e.target.value)
+              }
               style={inputStyle}
             />
           </Field>
@@ -255,7 +315,9 @@ export default function CreateAliExpressOrderPage() {
           <Field label="City">
             <input
               value={form.city}
-              onChange={(e) => updateField("city", e.target.value)}
+              onChange={(e) =>
+                updateField("city", e.target.value)
+              }
               style={inputStyle}
               required
             />
@@ -264,7 +326,9 @@ export default function CreateAliExpressOrderPage() {
           <Field label="Province / State">
             <input
               value={form.province}
-              onChange={(e) => updateField("province", e.target.value)}
+              onChange={(e) =>
+                updateField("province", e.target.value)
+              }
               style={inputStyle}
               required
             />
@@ -273,7 +337,9 @@ export default function CreateAliExpressOrderPage() {
           <Field label="Postcode">
             <input
               value={form.postcode}
-              onChange={(e) => updateField("postcode", e.target.value)}
+              onChange={(e) =>
+                updateField("postcode", e.target.value)
+              }
               style={inputStyle}
               required
             />
@@ -282,7 +348,12 @@ export default function CreateAliExpressOrderPage() {
           <Field label="Country Code">
             <input
               value={form.country}
-              onChange={(e) => updateField("country", e.target.value.toUpperCase())}
+              onChange={(e) =>
+                updateField(
+                  "country",
+                  e.target.value.toUpperCase()
+                )
+              }
               style={inputStyle}
               maxLength={2}
               required
@@ -292,7 +363,9 @@ export default function CreateAliExpressOrderPage() {
           <Field label="Mobile Number">
             <input
               value={form.mobile}
-              onChange={(e) => updateField("mobile", e.target.value)}
+              onChange={(e) =>
+                updateField("mobile", e.target.value)
+              }
               style={inputStyle}
             />
           </Field>
@@ -300,7 +373,9 @@ export default function CreateAliExpressOrderPage() {
           <Field label="Phone Country Code">
             <input
               value={form.phoneCountry}
-              onChange={(e) => updateField("phoneCountry", e.target.value)}
+              onChange={(e) =>
+                updateField("phoneCountry", e.target.value)
+              }
               style={inputStyle}
             />
           </Field>
@@ -312,7 +387,9 @@ export default function CreateAliExpressOrderPage() {
           <Field label="Payment Currency">
             <select
               value={form.currency}
-              onChange={(e) => updateField("currency", e.target.value)}
+              onChange={(e) =>
+                updateField("currency", e.target.value)
+              }
               style={inputStyle}
             >
               <option value="GBP">GBP</option>
@@ -323,29 +400,39 @@ export default function CreateAliExpressOrderPage() {
           <Field label="Payment Method">
             <select
               value={form.payment}
-              onChange={(e) => updateField("payment", e.target.value)}
+              onChange={(e) =>
+                updateField("payment", e.target.value)
+              }
               style={inputStyle}
             >
               <option value="manual">Manual Payment</option>
-              <option value="automatic">Automatic Payment (DS authorization required)</option>
+              <option value="automatic">
+                Automatic Payment (DS authorization required)
+              </option>
             </select>
           </Field>
         </section>
 
         {error && (
-          <p style={{
-            background: "#fee2e2",
-            color: "#991b1b",
-            padding: 12,
-            borderRadius: 6
-          }}>
+          <p
+            style={{
+              background: "#fee2e2",
+              color: "#991b1b",
+              padding: 12,
+              borderRadius: 6,
+            }}
+          >
             {error}
           </p>
         )}
 
         <button
           type="submit"
-          disabled={submitting || loadingAccounts || accounts.length === 0}
+          disabled={
+            submitting ||
+            loadingAccounts ||
+            accounts.length === 0
+          }
           style={{
             width: "100%",
             padding: 15,
@@ -355,24 +442,29 @@ export default function CreateAliExpressOrderPage() {
             borderRadius: 7,
             fontSize: 16,
             fontWeight: 700,
-            cursor: submitting ? "not-allowed" : "pointer"
+            cursor: submitting ? "not-allowed" : "pointer",
           }}
         >
-          {submitting ? "Submitting..." : "Create AliExpress Order"}
+          {submitting
+            ? "Submitting..."
+            : "Create AliExpress Order"}
         </button>
       </form>
 
       {result && (
         <section style={sectionStyle}>
           <h2 style={headingStyle}>AliExpress API Response</h2>
-          <pre style={{
-            whiteSpace: "pre-wrap",
-            overflowWrap: "anywhere",
-            background: "#f3f4f6",
-            padding: 15,
-            borderRadius: 7,
-            fontSize: 13
-          }}>
+
+          <pre
+            style={{
+              whiteSpace: "pre-wrap",
+              overflowWrap: "anywhere",
+              background: "#f3f4f6",
+              padding: 15,
+              borderRadius: 7,
+              fontSize: 13,
+            }}
+          >
             {JSON.stringify(result, null, 2)}
           </pre>
         </section>
@@ -381,17 +473,22 @@ export default function CreateAliExpressOrderPage() {
   );
 }
 
-function Field({ label, children }: {
+function Field({
+  label,
+  children,
+}: {
   label: string;
   children: React.ReactNode;
 }) {
   return (
     <div style={{ marginBottom: 15 }}>
-      <label style={{
-        display: "block",
-        fontWeight: 600,
-        marginBottom: 7
-      }}>
+      <label
+        style={{
+          display: "block",
+          fontWeight: 600,
+          marginBottom: 7,
+        }}
+      >
         {label}
       </label>
       {children}
@@ -420,4 +517,3 @@ const inputStyle: React.CSSProperties = {
   fontSize: 15,
   boxSizing: "border-box",
 };
-

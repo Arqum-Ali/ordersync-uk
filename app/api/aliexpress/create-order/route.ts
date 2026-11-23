@@ -14,9 +14,28 @@ export async function POST(req: NextRequest) {
     const quantity = Number(body.quantity);
 
     const address = body.address || {};
-    const paymentMode = body.payment === "automatic" ? "automatic" : "manual";
+
+    const paymentMode =
+      body.payment === "automatic" ? "automatic" : "manual";
+
     const currency = String(body.currency || "GBP").toUpperCase();
 
+    // 2. Build recipient name
+    const firstName = String(
+      address.first_name || address.firstName || ""
+    ).trim();
+
+    const lastName = String(
+      address.last_name || address.lastName || ""
+    ).trim();
+
+    const existingFullName = String(address.full_name || "").trim();
+
+    const fullName = [firstName, lastName]
+      .filter(Boolean)
+      .join(" ") || existingFullName;
+
+    // 3. Validate order information
     if (
       !/^\d+$/.test(accountId) ||
       !/^\d+$/.test(productId) ||
@@ -34,18 +53,32 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // 4. Validate delivery address
+    const requiredAddressFields = {
+      recipientName: fullName,
+      address: String(address.address || "").trim(),
+      city: String(address.city || "").trim(),
+      province: String(address.province || "").trim(),
+      country: String(address.country || "").trim().toUpperCase(),
+    };
+
+    const missingFields = Object.entries(requiredAddressFields)
+      .filter(([, value]) => !value)
+      .map(([key]) => key);
+
     if (
-      !address.full_name ||
-      !address.address ||
-      !address.city ||
-      !address.province ||
-      !/^[A-Z]{2}$/.test(String(address.country || "").toUpperCase())
+      missingFields.length > 0 ||
+      fullName.length < 2 ||
+      fullName.length > 32 ||
+      !/^[A-Z]{2}$/.test(requiredAddressFields.country)
     ) {
       return NextResponse.json(
         {
           success: false,
           step: "ADDRESS_VALIDATION",
-          message: "Required customer delivery address fields are missing.",
+          message: "Invalid or incomplete delivery address.",
+          missingFields,
+          recipientNameLength: fullName.length,
         },
         { status: 400 }
       );
@@ -62,7 +95,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 2. Environment variables
+    // 5. Environment variables
     const appKey = process.env.ALIEXPRESS_APP_KEY;
     const appSecret = process.env.ALIEXPRESS_APP_SECRET;
     const supabaseUrl = process.env.SUPABASE_URL;
@@ -79,7 +112,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 3. Retrieve selected AliExpress account
+    // 6. Retrieve selected AliExpress account
     const accountResponse = await fetch(
       `${supabaseUrl}/rest/v1/aliexpress_accounts?select=access_token,access_token_expires_at,connection_status&aliexpress_user_id=eq.${encodeURIComponent(accountId)}&limit=1`,
       {
@@ -143,27 +176,41 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 4. Prepare order information
+    // 7. Prepare order information
     const orderId = `ORD-${Date.now()}`;
+
+    const cleanPhone = String(address.mobile_no || "")
+      .replace(/[\s()+-]/g, "");
+
+    const cleanPhoneCountry = String(address.phone_country || "")
+      .replace(/[\s()+-]/g, "");
 
     const orderRequest: Record<string, any> = {
       out_order_id: orderId,
 
       logistics_address: {
-        full_name: String(address.full_name).trim(),
-        address: String(address.address).trim(),
-        city: String(address.city).trim(),
-        province: String(address.province).trim(),
-        country: String(address.country).toUpperCase(),
+        contact_person: fullName,
+        full_name: fullName,
+
+        address: requiredAddressFields.address,
+        city: requiredAddressFields.city,
+        province: requiredAddressFields.province,
+        country: requiredAddressFields.country,
+
         ...(address.address2
           ? { address2: String(address.address2).trim() }
           : {}),
-        ...(address.zip ? { zip: String(address.zip).trim() } : {}),
-        ...(address.mobile_no
-          ? { mobile_no: String(address.mobile_no).trim() }
+
+        ...(address.zip
+          ? { zip: String(address.zip).trim() }
           : {}),
-        ...(address.phone_country
-          ? { phone_country: String(address.phone_country).trim() }
+
+        ...(cleanPhone
+          ? { mobile_no: cleanPhone }
+          : {}),
+
+        ...(cleanPhoneCountry
+          ? { phone_country: cleanPhoneCountry }
           : {}),
       },
 
@@ -171,6 +218,7 @@ export async function POST(req: NextRequest) {
         {
           product_id: Number(productId),
           product_count: quantity,
+
           ...(body.skuAttr
             ? { sku_attr: String(body.skuAttr).trim() }
             : {}),
@@ -178,7 +226,7 @@ export async function POST(req: NextRequest) {
       ],
     };
 
-    // 5. Prepare AliExpress API parameters
+    // 8. Prepare AliExpress API parameters
     const method = "aliexpress.ds.order.create";
 
     const commonParams: Record<string, string> = {
@@ -203,7 +251,7 @@ export async function POST(req: NextRequest) {
       }),
     };
 
-    // 6. Generate signature using the same pattern as your existing route
+    // 9. Generate signature
     const allParams = {
       ...commonParams,
       ...businessParams,
@@ -227,7 +275,7 @@ export async function POST(req: NextRequest) {
 
     const formBody = new URLSearchParams(businessParams);
 
-    // 7. Submit order to AliExpress
+    // 10. Submit order to AliExpress
     const apiResponse = await fetch(
       `https://api-sg.aliexpress.com/sync?${queryParams.toString()}`,
       {
@@ -241,7 +289,7 @@ export async function POST(req: NextRequest) {
       }
     );
 
-    // 8. Read response
+    // 11. Read response
     const responseText = await apiResponse.text();
 
     let apiData: any;
@@ -266,7 +314,11 @@ export async function POST(req: NextRequest) {
       apiData.result ??
       apiData;
 
-    if (!apiResponse.ok || apiData.error_response || apiResult.is_success !== true) {
+    if (
+      !apiResponse.ok ||
+      apiData.error_response ||
+      apiResult.is_success !== true
+    ) {
       return NextResponse.json(
         {
           success: false,
@@ -275,15 +327,24 @@ export async function POST(req: NextRequest) {
             apiResult.error_msg ||
             apiData.error_response?.msg ||
             "AliExpress order creation failed.",
+
           httpStatus: apiResponse.status,
           error: apiData.error_response || apiResult,
           rawResponse: apiData,
+
+          debug: {
+            recipientNameSent: fullName,
+            contactPersonSent: fullName,
+            countrySent: requiredAddressFields.country,
+            citySent: requiredAddressFields.city,
+            provinceSent: requiredAddressFields.province,
+          },
         },
         { status: 502 }
       );
     }
 
-    // 9. Return successful response
+    // 12. Return successful response
     return NextResponse.json({
       success: true,
       step: "ORDER_CREATED",
