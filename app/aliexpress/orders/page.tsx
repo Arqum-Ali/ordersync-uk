@@ -24,7 +24,7 @@ function normalizeHeader(value: unknown): string {
     .replace(/[^a-z0-9]/g, '');
 }
 
-// Read the original Excel cell value instead of its formatted display value.
+// Read the original Excel cell value to avoid scientific notation.
 function getExactOrderId(
   worksheet: XLSX.WorkSheet,
   rowIndex: number,
@@ -46,7 +46,7 @@ function getExactOrderId(
   if (typeof value === 'number') {
     if (!Number.isSafeInteger(value)) {
       throw new Error(
-        `AliExpress Order ID in Excel row ${rowIndex + 1} is stored as an unsafe number. Excel may have rounded the ID. Please use the original order ID stored as text.`
+        `AliExpress Order ID in row ${rowIndex + 1} is stored as an unsafe number. The ID may have been rounded. Please upload the original ID stored as text.`
       );
     }
 
@@ -181,16 +181,33 @@ export default function AliExpressOrdersPage() {
 
     try {
       const buffer = await file.arrayBuffer();
+      const isCsv = file.name.toLowerCase().endsWith('.csv');
 
-      const workbook = XLSX.read(buffer, {
-        type: 'array',
-        cellDates: true,
-      });
+      let workbook: XLSX.WorkBook;
+
+      if (isCsv) {
+        // Read CSV as text so long order IDs remain strings.
+        let csvText = new TextDecoder('utf-8').decode(buffer);
+
+        // Remove UTF-8 BOM if present.
+        csvText = csvText.replace(/^\uFEFF/, '');
+
+        workbook = XLSX.read(csvText, {
+          type: 'string',
+          raw: true,
+          cellDates: false,
+        });
+      } else {
+        workbook = XLSX.read(buffer, {
+          type: 'array',
+          cellDates: true,
+        });
+      }
 
       const firstSheetName = workbook.SheetNames[0];
 
       if (!firstSheetName) {
-        throw new Error('The Excel file does not contain a worksheet.');
+        throw new Error('The uploaded file does not contain readable data.');
       }
 
       const worksheet = workbook.Sheets[firstSheetName];
@@ -202,7 +219,7 @@ export default function AliExpressOrdersPage() {
       }) as unknown[][];
 
       if (matrix.length < 2) {
-        throw new Error('The Excel sheet has no order data.');
+        throw new Error('The uploaded file has no order data.');
       }
 
       const originalHeaders = matrix[0].map((value) =>
@@ -222,10 +239,10 @@ export default function AliExpressOrdersPage() {
         throw new Error('Could not find the "Ali Express order ID" column.');
       }
 
-      // Preserve every original Excel column.
+      // Preserve every original column.
       const columns = [...originalHeaders];
 
-      // Add Tracking and Status columns if they do not already exist.
+      // Add Tracking and Status columns if they do not exist.
       let trackingIndex = headers.indexOf('tracking');
 
       if (trackingIndex === -1) {
@@ -265,19 +282,25 @@ export default function AliExpressOrdersPage() {
 
         matchingDateRows++;
 
-        // Get the original cell value to avoid scientific notation.
-        const orderId = getExactOrderId(
-          worksheet,
-          index,
-          orderIdIndex
-        );
+        // Get the original cell value for Excel files.
+        // CSV values are read as text.
+        const orderId = isCsv
+          ? String(originalRow[orderIdIndex] ?? '').trim()
+          : getExactOrderId(worksheet, index, orderIdIndex);
 
         if (!orderId) continue;
 
-        // Preserve all cells, including blank cells.
+        // Validate that the ID contains digits only.
+        if (!/^\d+$/.test(orderId)) {
+          throw new Error(
+            `Invalid AliExpress Order ID in row ${index + 1}: ${orderId}`
+          );
+        }
+
+        // Preserve the original row.
         const cells = [...originalRow];
 
-        // Keep the order ID in its original Excel column as a string.
+        // Keep the order ID as a string.
         cells[orderIdIndex] = orderId;
 
         while (cells.length < columns.length) {
@@ -335,7 +358,7 @@ export default function AliExpressOrdersPage() {
       window.location.href = '/aliexpress/orders/results';
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : 'Could not read the Excel file.'
+        err instanceof Error ? err.message : 'Could not read the uploaded file.'
       );
     } finally {
       setProcessing(false);
@@ -357,7 +380,7 @@ export default function AliExpressOrdersPage() {
         <h1>Order Management</h1>
 
         <p className={styles.intro}>
-          Select your account, choose a date range and upload your Excel file.
+          Select your account, choose a date range and upload your Excel or CSV file.
         </p>
 
         <div className={styles.section}>
@@ -437,24 +460,24 @@ export default function AliExpressOrdersPage() {
 
         <div className={styles.section}>
           <strong className={styles.sectionTitle}>
-            3. Upload Excel File
+            3. Upload Excel or CSV File
           </strong>
 
           <label className={styles.uploadBox}>
             <span className={styles.uploadIcon}>📄</span>
 
             <span className={styles.uploadText}>
-              Click here to select your Excel file
+              Click here to select your Excel or CSV file
             </span>
 
             <span className={styles.uploadHint}>
-              Supported formats: .xlsx and .xls
+              Supported formats: .xlsx, .xls and .csv
             </span>
 
             <input
               className={styles.fileInput}
               type="file"
-              accept=".xlsx,.xls"
+              accept=".xlsx,.xls,.csv,text/csv"
               onChange={(event) =>
                 setFile(event.target.files?.[0] || null)
               }
@@ -480,12 +503,12 @@ export default function AliExpressOrdersPage() {
             cursor: canContinue && !processing ? 'pointer' : 'not-allowed',
           }}
         >
-          {processing ? 'Reading Excel File...' : 'Extract Order IDs'}
+          {processing ? 'Reading File...' : 'Extract Order IDs'}
         </button>
 
         <p className={styles.mutedText}>
-          Your original Excel rows and columns will be preserved on the
-          Results page. Each unique AliExpress order ID will be retrieved once.
+          Your original file rows and columns will be preserved. Each unique
+          AliExpress order ID will be retrieved once.
         </p>
 
         <p>
