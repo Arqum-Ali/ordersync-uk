@@ -19,10 +19,15 @@ type ExtractedOrder = {
 };
 
 function normalizeHeader(value: unknown): string {
-  return String(value ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return String(value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]/g, '');
 }
 
-function parseExcelDate(value: unknown): string | null {
+function parseExcelDate(
+  value: unknown,
+  fallbackYear: number
+): string | null {
   if (value instanceof Date && !isNaN(value.getTime())) {
     return [
       value.getFullYear(),
@@ -45,7 +50,7 @@ function parseExcelDate(value: unknown): string | null {
 
   if (!text) return null;
 
-  // Supports yyyy-mm-dd
+  // yyyy-mm-dd or yyyy/mm/dd
   let match = text.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/);
 
   if (match) {
@@ -55,7 +60,7 @@ function parseExcelDate(value: unknown): string | null {
     )}`;
   }
 
-  // Supports dd/mm/yyyy or dd-mm-yyyy
+  // dd/mm/yyyy or dd-mm-yyyy
   match = text.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
 
   if (match) {
@@ -65,22 +70,52 @@ function parseExcelDate(value: unknown): string | null {
     )}`;
   }
 
-  // Supports dates such as 23-Nov-26 or 6-Nov-2026
+  const monthNames = [
+    'jan',
+    'feb',
+    'mar',
+    'apr',
+    'may',
+    'jun',
+    'jul',
+    'aug',
+    'sep',
+    'oct',
+    'nov',
+    'dec',
+  ];
+
+  // dd-MMM-yyyy or dd-MMM-yy
   match = text.match(/^(\d{1,2})[-/\s]([A-Za-z]{3,})[-/\s](\d{2,4})$/);
 
   if (match) {
-    const monthNames = [
-      'jan', 'feb', 'mar', 'apr', 'may', 'jun',
-      'jul', 'aug', 'sep', 'oct', 'nov', 'dec',
-    ];
+    const month = monthNames.indexOf(
+      match[2].slice(0, 3).toLowerCase()
+    );
 
-    const month = monthNames.indexOf(match[2].slice(0, 3).toLowerCase());
     let year = Number(match[3]);
 
-    if (year < 100) year += year >= 70 ? 1900 : 2000;
+    if (year < 100) {
+      year += year >= 70 ? 1900 : 2000;
+    }
 
     if (month !== -1) {
       return `${year}-${String(month + 1).padStart(2, '0')}-${String(
+        Number(match[1])
+      ).padStart(2, '0')}`;
+    }
+  }
+
+  // dd-MMM without year, e.g. 20 Nov
+  match = text.match(/^(\d{1,2})[-/\s]([A-Za-z]{3,})$/);
+
+  if (match) {
+    const month = monthNames.indexOf(
+      match[2].slice(0, 3).toLowerCase()
+    );
+
+    if (month !== -1) {
+      return `${fallbackYear}-${String(month + 1).padStart(2, '0')}-${String(
         Number(match[1])
       ).padStart(2, '0')}`;
     }
@@ -119,7 +154,9 @@ export default function AliExpressOrdersPage() {
         }
       } catch (err) {
         setError(
-          err instanceof Error ? err.message : 'Could not load accounts'
+          err instanceof Error
+            ? err.message
+            : 'Could not load accounts'
         );
       } finally {
         setLoading(false);
@@ -130,14 +167,20 @@ export default function AliExpressOrdersPage() {
   }, []);
 
   async function extractOrders() {
-    if (!file || !startDate || !endDate || !selectedAccount) return;
+    if (!file || !startDate || !endDate || !selectedAccount) {
+      return;
+    }
 
     setProcessing(true);
     setError('');
 
     try {
       const buffer = await file.arrayBuffer();
-      const workbook = XLSX.read(buffer, { type: 'array', cellDates: true });
+
+      const workbook = XLSX.read(buffer, {
+        type: 'array',
+        cellDates: true,
+      });
 
       const firstSheetName = workbook.SheetNames[0];
 
@@ -161,12 +204,12 @@ export default function AliExpressOrdersPage() {
 
       const dateIndex = headers.indexOf('date');
 
-      const orderIdIndex = headers.findIndex(header =>
-        ['aliexpressorderid', 'aliexpressorderid'].includes(header)
-      );
+      const orderIdIndex = headers.indexOf('aliexpressorderid');
 
       if (dateIndex === -1) {
-        throw new Error('Could not find the "Date" column in your Excel file.');
+        throw new Error(
+          'Could not find the "Date" column in your Excel file.'
+        );
       }
 
       if (orderIdIndex === -1) {
@@ -177,13 +220,28 @@ export default function AliExpressOrdersPage() {
 
       const uniqueOrders = new Map<string, ExtractedOrder>();
 
+      let matchingDateRows = 0;
+      let rowsWithOrderIds = 0;
+
       for (const row of rows.slice(1)) {
-        const orderDate = parseExcelDate(row[dateIndex]);
+        const orderDate = parseExcelDate(
+          row[dateIndex],
+          Number(startDate.substring(0, 4))
+        );
+
         const orderId = String(row[orderIdIndex] ?? '').trim();
 
-        if (!orderDate || !orderId) continue;
+        if (!orderDate) continue;
 
-        if (orderDate < startDate || orderDate > endDate) continue;
+        if (orderDate < startDate || orderDate > endDate) {
+          continue;
+        }
+
+        matchingDateRows++;
+
+        if (!orderId) continue;
+
+        rowsWithOrderIds++;
 
         if (!uniqueOrders.has(orderId)) {
           uniqueOrders.set(orderId, {
@@ -195,25 +253,32 @@ export default function AliExpressOrdersPage() {
 
       const extractedOrders = Array.from(uniqueOrders.values());
 
+      const savedResults = {
+        accountId: selectedAccount,
+        accountLabel:
+          accounts.find(
+            account =>
+              account.aliexpress_user_id === selectedAccount
+          )?.account_label || selectedAccount,
+        fileName: file.name,
+        startDate,
+        endDate,
+        matchingDateRows,
+        rowsWithOrderIds,
+        orders: extractedOrders,
+      };
+
       sessionStorage.setItem(
         'aliexpress-extracted-orders',
-        JSON.stringify({
-          accountId: selectedAccount,
-          accountLabel:
-            accounts.find(
-              account => account.aliexpress_user_id === selectedAccount
-            )?.account_label || selectedAccount,
-          fileName: file.name,
-          startDate,
-          endDate,
-          orders: extractedOrders,
-        })
+        JSON.stringify(savedResults)
       );
 
       window.location.href = '/aliexpress/orders/results';
     } catch (err) {
       setError(
-        err instanceof Error ? err.message : 'Could not read the Excel file.'
+        err instanceof Error
+          ? err.message
+          : 'Could not read the Excel file.'
       );
     } finally {
       setProcessing(false);
@@ -230,7 +295,9 @@ export default function AliExpressOrdersPage() {
   return (
     <main className={styles.page}>
       <section className={styles.panel}>
-        <div className={styles.eyebrow}>ALIEXPRESS INTEGRATION</div>
+        <div className={styles.eyebrow}>
+          ALIEXPRESS INTEGRATION
+        </div>
 
         <h1>Order Management</h1>
 
@@ -244,10 +311,15 @@ export default function AliExpressOrdersPage() {
           </strong>
 
           {loading && <p>Loading accounts...</p>}
-          {error && <p style={{ color: 'red' }}>{error}</p>}
+
+          {error && (
+            <p style={{ color: 'red' }}>{error}</p>
+          )}
 
           {!loading && !error && accounts.length === 0 && (
-            <p>No connected accounts. Please authorize an account first.</p>
+            <p>
+              No connected accounts. Please authorize an account first.
+            </p>
           )}
 
           {accounts.map(account => (
@@ -263,7 +335,9 @@ export default function AliExpressOrdersPage() {
                 type="radio"
                 name="aliexpressAccount"
                 value={account.aliexpress_user_id}
-                checked={selectedAccount === account.aliexpress_user_id}
+                checked={
+                  selectedAccount === account.aliexpress_user_id
+                }
                 onChange={() =>
                   setSelectedAccount(account.aliexpress_user_id)
                 }
@@ -286,26 +360,40 @@ export default function AliExpressOrdersPage() {
 
           <div className={styles.dateGrid}>
             <div>
-              <label className={styles.fieldLabel}>Start Date</label>
+              <label className={styles.fieldLabel}>
+                Start Date
+              </label>
+
               <input
                 className={styles.dateInput}
                 type="date"
                 value={startDate}
-                onChange={event => setStartDate(event.target.value)}
+                onChange={event =>
+                  setStartDate(event.target.value)
+                }
               />
             </div>
 
             <div>
-              <label className={styles.fieldLabel}>End Date</label>
+              <label className={styles.fieldLabel}>
+                End Date
+              </label>
+
               <input
                 className={styles.dateInput}
                 type="date"
                 min={startDate || undefined}
                 value={endDate}
-                onChange={event => setEndDate(event.target.value)}
+                onChange={event =>
+                  setEndDate(event.target.value)
+                }
               />
             </div>
           </div>
+
+          <p className={styles.mutedText}>
+            Only orders within this date range will be extracted.
+          </p>
         </div>
 
         <div className={styles.section}>
@@ -315,9 +403,11 @@ export default function AliExpressOrdersPage() {
 
           <label className={styles.uploadBox}>
             <span className={styles.uploadIcon}>📄</span>
+
             <span className={styles.uploadText}>
               Click here to select your Excel file
             </span>
+
             <span className={styles.uploadHint}>
               Supported formats: .xlsx and .xls
             </span>
@@ -339,7 +429,9 @@ export default function AliExpressOrdersPage() {
           )}
         </div>
 
-        {error && <p style={{ color: 'red' }}>{error}</p>}
+        {error && (
+          <p style={{ color: 'red' }}>{error}</p>
+        )}
 
         <button
           type="button"
@@ -348,15 +440,20 @@ export default function AliExpressOrdersPage() {
           onClick={extractOrders}
           style={{
             opacity: canContinue && !processing ? 1 : 0.5,
-            cursor: canContinue && !processing ? 'pointer' : 'not-allowed',
+            cursor:
+              canContinue && !processing
+                ? 'pointer'
+                : 'not-allowed',
           }}
         >
-          {processing ? 'Reading Excel File...' : 'Extract Order IDs'}
+          {processing
+            ? 'Reading Excel File...'
+            : 'Extract Order IDs'}
         </button>
 
         <p className={styles.mutedText}>
-          This step only extracts order IDs from your Excel file. It does not
-          contact AliExpress yet.
+          This step only extracts order IDs from your Excel file.
+          It does not contact AliExpress yet.
         </p>
 
         <p>
