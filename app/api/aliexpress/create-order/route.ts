@@ -30,6 +30,7 @@ export async function POST(req: NextRequest) {
       [firstName, lastName].filter(Boolean).join(" ") ||
       String(address.full_name || "").trim();
 
+    // Input validation
     if (
       !/^\d+$/.test(accountId) ||
       !/^\d+$/.test(productId) ||
@@ -47,6 +48,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Address validation
     const requiredAddressFields = {
       recipientName: fullName,
       address: String(address.address || "").trim(),
@@ -78,6 +80,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Currency validation
     if (!["GBP", "USD"].includes(currency)) {
       return NextResponse.json(
         {
@@ -89,6 +92,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Environment variables
     const appKey = process.env.ALIEXPRESS_APP_KEY;
     const appSecret = process.env.ALIEXPRESS_APP_SECRET;
     const supabaseUrl = process.env.SUPABASE_URL;
@@ -99,7 +103,8 @@ export async function POST(req: NextRequest) {
         {
           success: false,
           step: "ENVIRONMENT_CONFIGURATION",
-          message: "AliExpress or Supabase environment variables are missing.",
+          message:
+            "AliExpress or Supabase environment variables are missing.",
         },
         { status: 500 }
       );
@@ -169,13 +174,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // Preserve the phone country prefix, including "+"
+    // Phone details
     const mobileNo = String(address.mobile_no || "")
       .replace(/\D/g, "");
 
-    const phoneCountry = String(address.phone_country || "+").trim();
+    const phoneCountry = String(
+      address.phone_country || "+"
+    ).trim();
 
-    // Build the payload in the same structure as the successful test
+    // Order request payload
     const orderRequest = {
       product_items: [
         {
@@ -203,9 +210,10 @@ export async function POST(req: NextRequest) {
       },
     };
 
-    // AliExpress API parameters
+    // AliExpress API method
     const method = "aliexpress.ds.order.create";
 
+    // Common API parameters
     const commonParams: Record<string, string> = {
       app_key: appKey,
       v: "2.0",
@@ -218,15 +226,26 @@ export async function POST(req: NextRequest) {
       simplify: "true",
     };
 
-    const businessParams: Record<string, string> = {
-      param_place_order_request4_open_api_d_t_o:
-        JSON.stringify(orderRequest),
-
-      payment: JSON.stringify({
+    // IMPORTANT:
+    // Currency/payment settings belong inside ds_extend_request.
+    // This follows the official AliExpress Java/PHP example.
+    const dsExtendRequest = {
+      payment: {
         pay_currency: currency,
         try_to_pay:
           paymentMode === "automatic" ? "true" : "false",
-      }),
+      },
+      promotion: {
+        promotion_code: "",
+      },
+    };
+
+    // Business parameters
+    const businessParams: Record<string, string> = {
+      ds_extend_request: JSON.stringify(dsExtendRequest),
+
+      param_place_order_request4_open_api_d_t_o:
+        JSON.stringify(orderRequest),
     };
 
     // Generate signature
@@ -246,11 +265,13 @@ export async function POST(req: NextRequest) {
       .digest("hex")
       .toUpperCase();
 
+    // Query parameters
     const queryParams = new URLSearchParams({
       ...commonParams,
       sign,
     });
 
+    // POST body
     const formBody = new URLSearchParams(businessParams);
 
     // Submit order to AliExpress
@@ -291,6 +312,7 @@ export async function POST(req: NextRequest) {
       apiData.result ??
       apiData;
 
+    // Check API response
     if (
       !apiResponse.ok ||
       apiData.error_response ||
@@ -309,6 +331,9 @@ export async function POST(req: NextRequest) {
           rawResponse: apiData,
           debug: {
             requestPayload: orderRequest,
+            dsExtendRequest,
+            requestedCurrency: currency,
+            paymentMode,
             recipientNameSent: fullName,
             citySent: requiredAddressFields.city,
             provinceSent: requiredAddressFields.province,
@@ -318,11 +343,19 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    // Successful response
+    const orderIds =
+      apiResult.order_list?.number ||
+      apiResult.order_list ||
+      [];
+
     return NextResponse.json({
       success: true,
       step: "ORDER_CREATED",
-      orderIds: apiResult.order_list || [],
+      orderIds,
       paymentMode,
+      requestedCurrency: currency,
+      dsExtendRequest,
       data: apiData,
     });
 
@@ -330,7 +363,10 @@ export async function POST(req: NextRequest) {
     const errorMessage =
       error instanceof Error ? error.message : String(error);
 
-    console.error("AliExpress create order error:", errorMessage);
+    console.error(
+      "AliExpress create order error:",
+      errorMessage
+    );
 
     return NextResponse.json(
       {
