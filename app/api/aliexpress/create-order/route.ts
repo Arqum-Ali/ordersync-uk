@@ -4,72 +4,6 @@ import crypto from "crypto";
 
 export const runtime = "nodejs";
 
-const FALLBACK_PRODUCTS = [
-  {
-    name: "Product A - Black",
-    productId: "1005013367794536",
-    skuAttr: "14:10",
-  },
-  {
-    name: "Product B - 1pcs With Box",
-    productId: "1005012432973680",
-    skuAttr: "14:193",
-  },
-];
-
-function getApiResult(apiData: any) {
-  return (
-    apiData.aliexpress_ds_order_create_response?.result ??
-    apiData.result ??
-    apiData
-  );
-}
-
-function getErrorMessage(apiData: any, apiResult: any): string {
-  return (
-    apiResult?.error_msg ||
-    apiResult?.msg ||
-    apiData?.error_response?.msg ||
-    apiData?.error_response?.sub_msg ||
-    "AliExpress order creation failed."
-  );
-}
-
-// Only retry when AliExpress explicitly reports a stock-related error.
-function isStockError(apiData: any, apiResult: any): boolean {
-  const errorText = [
-    getErrorMessage(apiData, apiResult),
-    apiResult?.error_code,
-    apiResult?.code,
-    apiData?.error_response?.code,
-    apiData?.error_response?.sub_code,
-    JSON.stringify(apiResult || {}),
-  ]
-    .join(" ")
-    .toLowerCase();
-
-  const stockKeywords = [
-    "out of stock",
-    "sold out",
-    "insufficient stock",
-    "stock insufficient",
-    "not enough stock",
-    "stock not enough",
-    "sku stock",
-    "sku unavailable",
-    "inventory insufficient",
-    "inventory not enough",
-    "product unavailable",
-    "sku is unavailable",
-    "quantity exceeds stock",
-    "stock quantity",
-  ];
-
-  return stockKeywords.some((keyword) =>
-    errorText.includes(keyword)
-  );
-}
-
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
@@ -241,38 +175,60 @@ export async function POST(req: NextRequest) {
     }
 
     // Phone details
-    const mobileNo = String(address.mobile_no || "").replace(/\D/g, "");
+    const mobileNo = String(address.mobile_no || "")
+      .replace(/\D/g, "");
 
     const phoneCountry = String(
       address.phone_country || "+"
     ).trim();
 
-    // Delivery address used for both attempts
-    const logisticsAddress = {
-      zip: requiredAddressFields.zip,
-      country: requiredAddressFields.country,
-      address: requiredAddressFields.address,
-      address2: String(address.address2 ?? "").trim(),
-      city: requiredAddressFields.city,
-      contact_person: fullName,
-      mobile_no: mobileNo,
-      phone_country: phoneCountry,
-      full_name: fullName,
-      province: requiredAddressFields.province,
+    // Order request payload
+    const orderRequest = {
+      product_items: [
+        {
+          logistics_service_name: String(
+            body.logisticsServiceName ?? ""
+          ),
+          sku_attr: String(body.skuAttr ?? "").trim(),
+          product_count: quantity,
+          product_id: Number(productId),
+          order_memo: String(body.orderMemo ?? ""),
+        },
+      ],
+
+      logistics_address: {
+        zip: requiredAddressFields.zip,
+        country: requiredAddressFields.country,
+        address: requiredAddressFields.address,
+        address2: String(address.address2 ?? "").trim(),
+        city: requiredAddressFields.city,
+        contact_person: fullName,
+        mobile_no: mobileNo,
+        phone_country: phoneCountry,
+        full_name: fullName,
+        province: requiredAddressFields.province,
+      },
     };
 
-    // Original customer product
-    const customerProduct = {
-      logistics_service_name: String(
-        body.logisticsServiceName ?? ""
-      ),
-      sku_attr: String(body.skuAttr ?? "").trim(),
-      product_count: quantity,
-      product_id: Number(productId),
-      order_memo: String(body.orderMemo ?? ""),
+    // AliExpress API method
+    const method = "aliexpress.ds.order.create";
+
+    // Common API parameters
+    const commonParams: Record<string, string> = {
+      app_key: appKey,
+      v: "2.0",
+      timestamp: Date.now().toString(),
+      method,
+      format: "json",
+      session: account.access_token,
+      partner_id: "iop-sdk-java-20181207",
+      sign_method: "sha256",
+      simplify: "true",
     };
 
-    // Payment settings
+    // IMPORTANT:
+    // Currency/payment settings belong inside ds_extend_request.
+    // This follows the official AliExpress Java/PHP example.
     const dsExtendRequest = {
       payment: {
         pay_currency: currency,
@@ -284,255 +240,125 @@ export async function POST(req: NextRequest) {
       },
     };
 
-    // Create one AliExpress order with two product lines
-    async function createAliExpressOrder(addon: typeof FALLBACK_PRODUCTS[number]) {
-      const orderRequest = {
-        product_items: [
-          customerProduct,
-          {
-            logistics_service_name: String(
-              body.logisticsServiceName ?? ""
-            ),
-            sku_attr: addon.skuAttr,
-            product_count: 1,
-            product_id: Number(addon.productId),
-            order_memo: "",
-          },
-        ],
-        logistics_address: logisticsAddress,
-      };
+    // Business parameters
+    const businessParams: Record<string, string> = {
+      ds_extend_request: JSON.stringify(dsExtendRequest),
 
-      const method = "aliexpress.ds.order.create";
+      param_place_order_request4_open_api_d_t_o:
+        JSON.stringify(orderRequest),
+    };
 
-      const commonParams: Record<string, string> = {
-        app_key: appKey!,
-        v: "2.0",
-        timestamp: Date.now().toString(),
-        method,
-        format: "json",
-        session: account.access_token,
-        partner_id: "iop-sdk-java-20181207",
-        sign_method: "sha256",
-        simplify: "true",
-      };
+    // Generate signature
+    const allParams = {
+      ...commonParams,
+      ...businessParams,
+    };
 
-      const businessParams: Record<string, string> = {
-        ds_extend_request: JSON.stringify(dsExtendRequest),
-        param_place_order_request4_open_api_d_t_o:
-          JSON.stringify(orderRequest),
-      };
+    const signString = Object.keys(allParams)
+      .sort()
+      .map((key) => key + allParams[key])
+      .join("");
 
-      // Generate AliExpress signature
-      const allParams = {
-        ...commonParams,
-        ...businessParams,
-      };
+    const sign = crypto
+      .createHmac("sha256", appSecret)
+      .update(signString, "utf8")
+      .digest("hex")
+      .toUpperCase();
 
-      const signString = Object.keys(allParams)
-        .sort()
-        .map((key) => key + allParams[key])
-        .join("");
+    // Query parameters
+    const queryParams = new URLSearchParams({
+      ...commonParams,
+      sign,
+    });
 
-      const sign = crypto
-        .createHmac("sha256", appSecret!)
-        .update(signString, "utf8")
-        .digest("hex")
-        .toUpperCase();
+    // POST body
+    const formBody = new URLSearchParams(businessParams);
 
-      const queryParams = new URLSearchParams({
-        ...commonParams,
-        sign,
-      });
+    // Submit order to AliExpress
+    const apiResponse = await fetch(
+      `https://api-sg.aliexpress.com/sync?${queryParams.toString()}`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type":
+            "application/x-www-form-urlencoded;charset=UTF-8",
+        },
+        body: formBody.toString(),
+        cache: "no-store",
+      }
+    );
 
-      const formBody = new URLSearchParams(businessParams);
+    const responseText = await apiResponse.text();
 
-      // Do not automatically retry network failures.
-      const apiResponse = await fetch(
-        `https://api-sg.aliexpress.com/sync?${queryParams.toString()}`,
+    let apiData: any;
+
+    try {
+      apiData = JSON.parse(responseText);
+    } catch {
+      return NextResponse.json(
         {
-          method: "POST",
-          headers: {
-            "Content-Type":
-              "application/x-www-form-urlencoded;charset=UTF-8",
-          },
-          body: formBody.toString(),
-          cache: "no-store",
-        }
-      );
-
-      const responseText = await apiResponse.text();
-
-      let apiData: any;
-
-      try {
-        apiData = JSON.parse(responseText);
-      } catch {
-        return {
           success: false,
-          uncertain: true,
+          step: "ALIEXPRESS_RESPONSE_PARSING",
           message: "AliExpress returned a non-JSON response.",
           httpStatus: apiResponse.status,
           response: responseText.slice(0, 3000),
-          addon,
-          orderRequest,
-        };
-      }
-
-      const apiResult = getApiResult(apiData);
-
-      const success =
-        apiResponse.ok &&
-        !apiData.error_response &&
-        apiResult.is_success === true;
-
-      if (success) {
-        return {
-          success: true,
-          addon,
-          orderRequest,
-          orderIds:
-            apiResult.order_list?.number ||
-            apiResult.order_list ||
-            [],
-          apiData,
-        };
-      }
-
-      return {
-        success: false,
-        uncertain: false,
-        addon,
-        orderRequest,
-        message: getErrorMessage(apiData, apiResult),
-        stockError: isStockError(apiData, apiResult),
-        httpStatus: apiResponse.status,
-        apiData,
-      };
+        },
+        { status: 502 }
+      );
     }
 
-    // FIRST ATTEMPT: Product A
-    let firstAttempt;
+    const apiResult =
+      apiData.aliexpress_ds_order_create_response?.result ??
+      apiData.result ??
+      apiData;
 
-    try {
-      firstAttempt = await createAliExpressOrder(
-        FALLBACK_PRODUCTS[0]
-      );
-    } catch (error) {
-      console.error("Product A request failed:", error);
-
+    // Check API response
+    if (
+      !apiResponse.ok ||
+      apiData.error_response ||
+      apiResult.is_success !== true
+    ) {
       return NextResponse.json(
         {
           success: false,
-          step: "PRODUCT_A_REQUEST_FAILED",
+          step: "ALIEXPRESS_ORDER_CREATION",
           message:
-            "The request to AliExpress failed without a confirmed response. No automatic fallback was attempted to avoid duplicate orders.",
+            apiResult.error_msg ||
+            apiData.error_response?.msg ||
+            "AliExpress order creation failed.",
+          httpStatus: apiResponse.status,
+          error: apiData.error_response || apiResult,
+          rawResponse: apiData,
+          debug: {
+            requestPayload: orderRequest,
+            dsExtendRequest,
+            requestedCurrency: currency,
+            paymentMode,
+            recipientNameSent: fullName,
+            citySent: requiredAddressFields.city,
+            provinceSent: requiredAddressFields.province,
+          },
         },
         { status: 502 }
       );
     }
 
-    // Product A succeeded
-    if (firstAttempt.success) {
-      return NextResponse.json({
-        success: true,
-        step: "ORDER_CREATED",
-        selectedAddon: firstAttempt.addon,
-        orderIds: firstAttempt.orderIds,
-        paymentMode,
-        requestedCurrency: currency,
-        productItems: firstAttempt.orderRequest.product_items,
-        data: firstAttempt.apiData,
-      });
-    }
+    // Successful response
+    const orderIds =
+      apiResult.order_list?.number ||
+      apiResult.order_list ||
+      [];
 
-    // Uncertain response: never submit another order
-    if (firstAttempt.uncertain) {
-      return NextResponse.json(
-        {
-          success: false,
-          step: "PRODUCT_A_RESPONSE_UNCERTAIN",
-          message:
-            "AliExpress response could not be confirmed. Check your AliExpress orders before trying again.",
-          firstAttempt,
-        },
-        { status: 502 }
-      );
-    }
+    return NextResponse.json({
+      success: true,
+      step: "ORDER_CREATED",
+      orderIds,
+      paymentMode,
+      requestedCurrency: currency,
+      dsExtendRequest,
+      data: apiData,
+    });
 
-    // Only fall back when the first attempt clearly reports a stock error
-    if (!firstAttempt.stockError) {
-      return NextResponse.json(
-        {
-          success: false,
-          step: "PRODUCT_A_ORDER_FAILED",
-          message: firstAttempt.message,
-          fallbackAttempted: false,
-          firstAttempt,
-        },
-        { status: 502 }
-      );
-    }
-
-    // SECOND ATTEMPT: Product B
-    let secondAttempt;
-
-    try {
-      secondAttempt = await createAliExpressOrder(
-        FALLBACK_PRODUCTS[1]
-      );
-    } catch (error) {
-      console.error("Product B request failed:", error);
-
-      return NextResponse.json(
-        {
-          success: false,
-          step: "PRODUCT_B_REQUEST_FAILED",
-          message:
-            "Product A was rejected for a stock-related error, but the Product B request did not receive a confirmed response. Check AliExpress orders before retrying.",
-          firstAttempt,
-        },
-        { status: 502 }
-      );
-    }
-
-    if (secondAttempt.success) {
-      return NextResponse.json({
-        success: true,
-        step: "ORDER_CREATED_WITH_FALLBACK",
-        selectedAddon: secondAttempt.addon,
-        fallbackUsed: true,
-        orderIds: secondAttempt.orderIds,
-        paymentMode,
-        requestedCurrency: currency,
-        productItems: secondAttempt.orderRequest.product_items,
-        firstAttempt: {
-          product: FALLBACK_PRODUCTS[0].name,
-          message: firstAttempt.message,
-        },
-        data: secondAttempt.apiData,
-      });
-    }
-
-    return NextResponse.json(
-      {
-        success: false,
-        step: "ALL_PRODUCT_ATTEMPTS_FAILED",
-        message:
-          "Product A and Product B could not be ordered. No successful order was confirmed.",
-        firstAttempt: {
-          product: FALLBACK_PRODUCTS[0],
-          message: firstAttempt.message,
-          stockError: firstAttempt.stockError,
-        },
-        secondAttempt: {
-          product: FALLBACK_PRODUCTS[1],
-          message: secondAttempt.message,
-          httpStatus: secondAttempt.httpStatus,
-          response: secondAttempt.apiData,
-        },
-      },
-      { status: 502 }
-    );
   } catch (error) {
     const errorMessage =
       error instanceof Error ? error.message : String(error);
