@@ -7,7 +7,9 @@ import {
   useState,
 } from "react";
 
-import { parseVerifiedAddress } from "@/lib/address-parser";
+import {
+  parseVerifiedAddress
+} from "@/lib/address-parser";
 
 type Account = {
   account_label: string;
@@ -48,28 +50,23 @@ export default function OrderAutomationPage() {
   const [total, setTotal] = useState(0);
   const [processed, setProcessed] = useState(0);
   const [created, setCreated] = useState(0);
+  const [saved, setSaved] = useState(0);
   const [failed, setFailed] = useState(0);
   const [skipped, setSkipped] = useState(0);
   const [review, setReview] = useState(0);
+  const [totalPrice, setTotalPrice] = useState(0);
 
+  const runningRef = useRef(false);
   const stopRef = useRef(false);
   const pauseRef = useRef(false);
-  const runningRef = useRef(false);
-
-  // ==========================================
-  // LOGGING
-  // ==========================================
 
   function log(message: string) {
-    setLogs(previous => [
-      ...previous,
+
+    setLogs(old => [
+      ...old,
       `${new Date().toLocaleTimeString()} — ${message}`,
     ]);
   }
-
-  // ==========================================
-  // GOOGLE SHEETS API
-  // ==========================================
 
   async function sheetsApi(body: object) {
 
@@ -97,7 +94,7 @@ export default function OrderAutomationPage() {
   }
 
   // ==========================================
-  // LOAD CONNECTED ACCOUNTS AND SHEET TABS
+  // LOAD ACCOUNTS AND SHEET TABS
   // ==========================================
 
   useEffect(() => {
@@ -114,21 +111,19 @@ export default function OrderAutomationPage() {
         const data = await response.json();
 
         if (!response.ok || !data.success) {
-          throw new Error(
-            "Unable to load AliExpress accounts"
-          );
+          throw new Error("Unable to load accounts");
         }
 
         const connected = (
           data.accounts || []
         ).filter(
-          (account: Account) =>
-            account.connection_status === "connected"
+          (a: Account) =>
+            a.connection_status === "connected"
         );
 
         setAccounts(connected);
 
-        if (connected.length > 0) {
+        if (connected.length) {
           setAccountId(
             connected[0].aliexpress_user_id
           );
@@ -144,25 +139,23 @@ export default function OrderAutomationPage() {
 
       try {
 
-        const data = await sheetsApi({
+        const result = await sheetsApi({
           action: "listTabs",
         });
 
-        setTabs(data.tabs || []);
+        setTabs(result.tabs || []);
 
-        if (data.tabs?.length) {
+        if (result.tabs?.length) {
 
-          const preferred = data.tabs.includes(
-            "Betelbee Nov"
-          )
-            ? "Betelbee Nov"
-            : data.tabs[0];
-
-          setSheet(preferred);
+          setSheet(
+            result.tabs.includes("Betelbee Nov")
+              ? "Betelbee Nov"
+              : result.tabs[0]
+          );
         }
 
         log(
-          `Loaded ${data.tabs.length} Google Sheet tabs`
+          `Loaded ${result.tabs.length} Google Sheet tabs`
         );
 
       } catch (error: any) {
@@ -173,10 +166,6 @@ export default function OrderAutomationPage() {
     initialize();
 
   }, []);
-
-  // ==========================================
-  // PAUSE HANDLING
-  // ==========================================
 
   async function waitWhilePaused() {
 
@@ -202,16 +191,11 @@ export default function OrderAutomationPage() {
       !accountId ||
       !sheet ||
       !fromDate ||
-      !toDate
+      !toDate ||
+      fromDate > toDate
     ) {
-      log(
-        "Select account, sheet and date range."
-      );
-      return;
-    }
 
-    if (fromDate > toDate) {
-      log("Invalid date range.");
+      log("Select valid account, sheet and dates");
       return;
     }
 
@@ -221,20 +205,20 @@ export default function OrderAutomationPage() {
 
     setRunning(true);
     setPaused(false);
-    setLogs([]);
 
+    setLogs([]);
     setTotal(0);
     setProcessed(0);
     setCreated(0);
+    setSaved(0);
     setFailed(0);
     setSkipped(0);
     setReview(0);
+    setTotalPrice(0);
 
     try {
 
-      // Automatically retrieve Google Sheet data
-
-      log("Fetching orders from Google Sheets...");
+      log("Loading matching orders...");
 
       const result = await sheetsApi({
         action: "getOrders",
@@ -258,31 +242,21 @@ export default function OrderAutomationPage() {
 
       setTotal(orders.length);
 
-      log(
-        `Found ${orders.length} eligible orders`
-      );
+      log(`Found ${orders.length} eligible orders`);
 
-      if (!orders.length) {
-        log("No eligible orders found.");
-        return;
-      }
+      if (!orders.length) return;
 
       const confirmed = window.confirm(
-        `Create ${orders.length} REAL AliExpress ` +
+        `Create ${orders.length} real AliExpress ` +
         `order request(s)?\n\n` +
-        `Each request includes the original product ` +
-        `and one fixed extra product.\n\n` +
+        `Original product + fixed extra product.\n` +
         `Payment: Manual\nCurrency: GBP`
       );
 
       if (!confirmed || stopRef.current) {
-        log("Automation cancelled.");
+        log("Automation cancelled");
         return;
       }
-
-      // ==========================================
-      // PROCESS ORDERS ONE BY ONE
-      // ==========================================
 
       for (const order of orders) {
 
@@ -298,19 +272,24 @@ export default function OrderAutomationPage() {
 
           log(
             `Processing row ${order.row} — ` +
-            `${order.orderNumber}`
+            order.orderNumber
           );
 
-          // Column P only
           const address = parseVerifiedAddress(
             order.verifiedAddress
           );
 
-          log(
-            `Row ${order.row}: Address parsed successfully`
-          );
+          // Empty SKU Attr does not skip the order.
 
-          // Reserve order to prevent duplicate requests
+          const skuAttr = String(
+            order.skuAttr || ""
+          ).trim();
+
+          log(
+            skuAttr
+              ? `Row ${order.row}: SKU Attr available`
+              : `Row ${order.row}: Empty SKU Attr — continuing`
+          );
 
           const reservation = await sheetsApi({
             action: "reserveOrder",
@@ -318,13 +297,14 @@ export default function OrderAutomationPage() {
             orderNumber: order.orderNumber,
             expected: {
               productId: order.productId,
-              skuAttr: order.skuAttr,
               quantity: order.quantity,
               verifiedAddress: order.verifiedAddress,
+              skuAttr,
             },
           });
 
-          reservationId = reservation.reservationId;
+          reservationId =
+            reservation.reservationId;
 
           await waitWhilePaused();
 
@@ -336,36 +316,12 @@ export default function OrderAutomationPage() {
               orderNumber: order.orderNumber,
               reservationId,
               confirmedRejected: true,
-              message:
-                "Stopped before order submission",
+              message: "Stopped before submission",
             });
 
             reservationId = "";
             break;
           }
-
-          // ======================================
-          // EXISTING ALIEXPRESS ORDER API
-          // ======================================
-
-          const payload = {
-            accountId,
-
-            // Column Q
-            productId: order.productId,
-
-            // Column E
-            quantity: order.quantity,
-
-            // Column R
-            skuAttr: order.skuAttr,
-
-            // Parsed Column P
-            address,
-
-            currency: "GBP",
-            payment: "manual",
-          };
 
           submitted = true;
 
@@ -376,54 +332,44 @@ export default function OrderAutomationPage() {
               headers: {
                 "Content-Type": "application/json",
               },
-              body: JSON.stringify(payload),
+              body: JSON.stringify({
+                accountId,
+                productId: order.productId,
+                quantity: order.quantity,
+                skuAttr,
+                address,
+                currency: "GBP",
+                payment: "manual",
+              }),
             }
           );
 
           const data = await response.json();
 
-          const returned = Array.isArray(data.orderIds)
+          orderIds = Array.isArray(data.orderIds)
             ? data.orderIds
-            : data.orderIds != null
-              ? [data.orderIds]
-              : [];
-
-          orderIds = returned
-            .filter((id: unknown) =>
-              typeof id === "string" ||
-              (
-                typeof id === "number" &&
-                Number.isSafeInteger(id)
-              )
-            )
-            .map(String)
-            .filter(
-              (id: string) => /^\d+$/.test(id)
-            );
+                .filter(
+                  (id: unknown) =>
+                    typeof id === "string" ||
+                    (
+                      typeof id === "number" &&
+                      Number.isSafeInteger(id)
+                    )
+                )
+                .map(String)
+                .filter(
+                  (id: string) => /^\d+$/.test(id)
+                )
+            : [];
 
           // ======================================
-          // HANDLE FAILED ORDERS
+          // FAILED ORDER
           // ======================================
 
           if (!response.ok || !data.success) {
 
-            const preflightFailures = [
-              "INPUT_VALIDATION",
-              "ADDRESS_VALIDATION",
-              "PAYMENT_VALIDATION",
-              "ENVIRONMENT_CONFIGURATION",
-              "SUPABASE_ACCOUNT_LOOKUP",
-              "ACCOUNT_VALIDATION",
-              "TOKEN_VALIDATION",
-            ];
-
             const confirmedRejected =
-              (
-                preflightFailures.includes(
-                  data.step
-                ) ||
-                data.confirmedRejected === true
-              ) &&
+              data.confirmedRejected === true &&
               orderIds.length === 0;
 
             await sheetsApi({
@@ -435,80 +381,90 @@ export default function OrderAutomationPage() {
               uncertain: !confirmedRejected,
               orderIds,
               message:
-                data.message ||
-                "AliExpress rejected order",
+                data.message || "Order failed",
             });
 
             reservationId = "";
 
             if (confirmedRejected) {
-              setFailed(value => value + 1);
+              setFailed(v => v + 1);
             } else {
-              setReview(value => value + 1);
+              setReview(v => v + 1);
             }
 
             log(
               `Row ${order.row}: ` +
-              `${data.message || "Order failed"}`
+              (data.message || "Order failed")
             );
 
-            log(
-              confirmedRejected
-                ? "Skipped. Moving to next order."
-                : "Review required. Moving to next order."
-            );
+            log("Moving to next order");
 
             continue;
           }
 
           // ======================================
-          // SUCCESSFUL ORDER
+          // ORDER CREATED
           // ======================================
 
-          setCreated(value => value + 1);
+          setCreated(v => v + 1);
 
           log(
-            `Row ${order.row}: Order created successfully`
+            `Row ${order.row}: Order created`
           );
 
           log(
-            `Returned Order IDs: ` +
-            `${orderIds.join(", ") || "Not returned"}`
+            `Returned IDs: ${orderIds.join(", ")}`
           );
-
-          // Save only when backend confirms the
-          // original product-to-order-ID mapping.
 
           const originalOrderId = String(
             data.originalOrderId || ""
           );
 
+          const price = data.originalPrice;
+
+          // Verify both fields before saving.
+
           if (
             data.mappingVerified === true &&
-            /^\d+$/.test(originalOrderId) &&
-            orderIds.includes(originalOrderId)
+            orderIds.includes(originalOrderId) &&
+            typeof price === "number" &&
+            Number.isFinite(price) &&
+            price >= 0 &&
+            data.priceCurrency === "GBP"
           ) {
 
-            const saved = await sheetsApi({
+            const updated = await sheetsApi({
               action: "saveOrder",
               sheet,
               orderNumber: order.orderNumber,
               reservationId,
               productId: order.productId,
               originalOrderId,
+              originalPrice: price,
+              priceCurrency: "GBP",
               mappingVerified: true,
             });
 
             reservationId = "";
 
+            setSaved(v => v + 1);
+            setTotalPrice(v => v + price);
+
             log(
-              `Original Order ID saved in ${saved.cell}`
+              `Row ${order.row}: Original Order ID ` +
+              originalOrderId
+            );
+
+            log(
+              `Row ${order.row}: Price £${price.toFixed(2)}`
+            );
+
+            log(
+              `Updated ${updated.cell} and ` +
+              `${updated.priceCell} successfully`
             );
 
           } else {
-
-            // Preserve IDs without incorrectly
-            // saving the fixed extra product ID.
 
             await sheetsApi({
               action: "recordFailure",
@@ -518,18 +474,16 @@ export default function OrderAutomationPage() {
               uncertain: true,
               orderIds,
               message:
-                "Order created successfully. " +
-                "Original product Order ID requires " +
-                "verification before saving Column G.",
+                "Order created but ID or price verification pending",
             });
 
             reservationId = "";
 
-            setReview(value => value + 1);
+            setReview(v => v + 1);
 
             log(
-              "Order IDs saved in recovery log. " +
-              "Column G pending verification."
+              `Row ${order.row}: Verification pending. ` +
+              "IDs saved in recovery log."
             );
           }
 
@@ -557,7 +511,7 @@ export default function OrderAutomationPage() {
             } catch {
 
               log(
-                "Recovery log update failed. " +
+                "Recovery update failed. " +
                 "Reservation remains blocked."
               );
 
@@ -568,23 +522,21 @@ export default function OrderAutomationPage() {
           }
 
           if (submitted) {
-            setReview(value => value + 1);
+            setReview(v => v + 1);
           } else {
-            setFailed(value => value + 1);
+            setFailed(v => v + 1);
           }
-
-          log("Moving to next order.");
 
         } finally {
 
-          setProcessed(value => value + 1);
+          setProcessed(v => v + 1);
         }
       }
 
       log(
         stopRef.current
-          ? "Automation stopped safely."
-          : "Automation completed."
+          ? "Automation stopped"
+          : "Automation completed"
       );
 
     } catch (error: any) {
@@ -593,51 +545,35 @@ export default function OrderAutomationPage() {
 
     } finally {
 
-      setRunning(false);
-      setPaused(false);
-
       runningRef.current = false;
       pauseRef.current = false;
+
+      setRunning(false);
+      setPaused(false);
     }
   }
-
-  // ==========================================
-  // AUTOMATION CONTROLS
-  // ==========================================
 
   function pauseAutomation() {
 
     pauseRef.current = true;
     setPaused(true);
-
-    log(
-      "Pause requested. Finishing current request."
-    );
+    log("Pause requested");
   }
 
   function resumeAutomation() {
 
     pauseRef.current = false;
     setPaused(false);
-
-    log("Automation resumed.");
+    log("Automation resumed");
   }
 
   function stopAutomation() {
 
     stopRef.current = true;
     pauseRef.current = false;
-
     setPaused(false);
-
-    log(
-      "Stop requested. Finishing current request."
-    );
+    log("Stop requested");
   }
-
-  // ==========================================
-  // PAGE INTERFACE
-  // ==========================================
 
   return (
 
@@ -651,24 +587,18 @@ export default function OrderAutomationPage() {
       <h1 style={{
         fontSize: 30,
         fontWeight: 700,
-        marginBottom: 10,
       }}>
-        AliExpress Order Automation V1
+        AliExpress Order Automation V2
       </h1>
 
-      <p style={{
-        color: "#666",
-        marginBottom: 25,
-      }}>
-        Automatically create AliExpress orders
-        using Google Sheets.
+      <p>
+        Optional SKU Attr • Automatic Order ID
+        and Price Saving
       </p>
 
       <section style={sectionStyle}>
 
-        <h2 style={headingStyle}>
-          Automation Settings
-        </h2>
+        <h2>Automation Settings</h2>
 
         <label>AliExpress Account</label>
 
@@ -676,13 +606,13 @@ export default function OrderAutomationPage() {
           style={inputStyle}
           value={accountId}
           disabled={running}
-          onChange={event =>
-            setAccountId(event.target.value)
+          onChange={e =>
+            setAccountId(e.target.value)
           }
         >
 
           <option value="">
-            Select AliExpress account
+            Select account
           </option>
 
           {accounts.map(account => (
@@ -706,9 +636,7 @@ export default function OrderAutomationPage() {
           style={inputStyle}
           value={sheet}
           disabled={running}
-          onChange={event =>
-            setSheet(event.target.value)
-          }
+          onChange={e => setSheet(e.target.value)}
         >
 
           <option value="">
@@ -740,8 +668,8 @@ export default function OrderAutomationPage() {
               style={inputStyle}
               value={fromDate}
               disabled={running}
-              onChange={event =>
-                setFromDate(event.target.value)
+              onChange={e =>
+                setFromDate(e.target.value)
               }
             />
 
@@ -756,8 +684,8 @@ export default function OrderAutomationPage() {
               style={inputStyle}
               value={toDate}
               disabled={running}
-              onChange={event =>
-                setToDate(event.target.value)
+              onChange={e =>
+                setToDate(e.target.value)
               }
             />
 
@@ -767,55 +695,49 @@ export default function OrderAutomationPage() {
 
         <div style={{
           background: "#f3f4f6",
-          padding: 15,
-          borderRadius: 8,
-          marginBottom: 20,
           color: "#111827",
+          borderRadius: 8,
+          padding: 15,
+          marginBottom: 20,
         }}>
 
           <p>Payment: Manual</p>
+
           <p>Currency: GBP</p>
 
-          <p>
-            Fixed extra product:
-            Automatically included
-          </p>
+          <p>SKU Attr: Optional</p>
 
-          <p>
-            Existing AliExpress orders:
-            Automatically skipped
-          </p>
+          <p>Address source: Column P</p>
 
-          <p>
-            Address source: Column P only
-          </p>
+          <p>Order ID output: Column G</p>
+
+          <p>Price output: Column H</p>
+
+          <p>Extra product: Automatically included</p>
 
         </div>
 
-        <label style={{
-          display: "block",
-          marginBottom: 20,
-        }}>
+        <label>
 
           <input
             type="checkbox"
             checked={testMode}
             disabled={running}
-            onChange={event =>
-              setTestMode(event.target.checked)
+            onChange={e =>
+              setTestMode(e.target.checked)
             }
           />
 
-          {" "}Test Mode — Process only one real order
+          {" "}Test Mode — Process one real order
 
         </label>
 
         <button
           style={{
             ...buttonStyle,
+            background: "#2563eb",
             width: "100%",
-            background:
-              running ? "#9ca3af" : "#2563eb",
+            marginTop: 20,
           }}
           disabled={
             running ||
@@ -878,45 +800,32 @@ export default function OrderAutomationPage() {
 
       <section style={sectionStyle}>
 
-        <h2 style={headingStyle}>
-          Automation Progress
-        </h2>
+        <h2>Automation Progress</h2>
 
         <div style={{
           display: "grid",
           gridTemplateColumns:
-            "repeat(auto-fit, minmax(120px, 1fr))",
+            "repeat(auto-fit,minmax(120px,1fr))",
           gap: 12,
         }}>
 
           <Stat label="Total" value={total}/>
 
-          <Stat
-            label="Processed"
-            value={processed}
-          />
+          <Stat label="Processed" value={processed}/>
+
+          <Stat label="Created" value={created}/>
+
+          <Stat label="Saved to Sheet" value={saved}/>
+
+          <Stat label="Failed" value={failed}/>
+
+          <Stat label="Skipped" value={skipped}/>
+
+          <Stat label="Needs Review" value={review}/>
 
           <Stat
-            label="Created"
-            value={created}
-            color="#16a34a"
-          />
-
-          <Stat
-            label="Failed"
-            value={failed}
-            color="#dc2626"
-          />
-
-          <Stat
-            label="Skipped"
-            value={skipped}
-          />
-
-          <Stat
-            label="Needs Review"
-            value={review}
-            color="#d97706"
+            label="Verified Order Total"
+            value={`£${totalPrice.toFixed(2)}`}
           />
 
         </div>
@@ -935,21 +844,19 @@ export default function OrderAutomationPage() {
 
       <section style={sectionStyle}>
 
-        <h2 style={headingStyle}>
-          Live Automation Logs
-        </h2>
+        <h2>Live Automation Logs</h2>
 
         <pre style={{
           background: "#111827",
           color: "#ffffff",
           padding: 20,
-          minHeight: 230,
+          borderRadius: 8,
+          minHeight: 250,
           maxHeight: 500,
           overflow: "auto",
-          borderRadius: 8,
-          fontSize: 13,
           whiteSpace: "pre-wrap",
           overflowWrap: "anywhere",
+          fontSize: 13,
         }}>
 
           {logs.join("\n") ||
@@ -966,33 +873,28 @@ export default function OrderAutomationPage() {
 function Stat({
   label,
   value,
-  color = "#111827",
 }: {
   label: string;
-  value: number;
-  color?: string;
+  value: number | string;
 }) {
 
   return (
 
     <div style={{
       background: "#f3f4f6",
-      padding: 15,
+      color: "#111827",
       borderRadius: 8,
+      padding: 15,
       textAlign: "center",
     }}>
 
-      <div style={{
-        fontSize: 13,
-        color: "#666",
-      }}>
+      <div style={{ fontSize: 13 }}>
         {label}
       </div>
 
       <div style={{
-        fontSize: 28,
+        fontSize: 25,
         fontWeight: 700,
-        color,
       }}>
         {value}
       </div>
@@ -1002,16 +904,11 @@ function Stat({
 }
 
 const sectionStyle: React.CSSProperties = {
+  padding: 22,
+  marginTop: 20,
+  marginBottom: 20,
   border: "1px solid #ddd",
   borderRadius: 10,
-  padding: 22,
-  marginBottom: 22,
-};
-
-const headingStyle: React.CSSProperties = {
-  fontSize: 20,
-  fontWeight: 700,
-  marginBottom: 20,
 };
 
 const inputStyle: React.CSSProperties = {
@@ -1026,10 +923,10 @@ const inputStyle: React.CSSProperties = {
 };
 
 const buttonStyle: React.CSSProperties = {
-  padding: "12px 20px",
-  color: "#ffffff",
   border: "none",
+  padding: "12px 20px",
   borderRadius: 6,
+  color: "#ffffff",
   fontSize: 15,
   fontWeight: 600,
   cursor: "pointer",

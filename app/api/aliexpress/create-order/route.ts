@@ -4,6 +4,8 @@ import crypto from "crypto";
 
 export const runtime = "nodejs";
 
+const API_URL = "https://api-sg.aliexpress.com/sync";
+
 const FALLBACK_PRODUCTS = [
   {
     name: "Product A - Black",
@@ -17,537 +19,696 @@ const FALLBACK_PRODUCTS = [
   },
 ];
 
-function getApiResult(apiData: any) {
-  return (
-    apiData.aliexpress_ds_order_create_response?.result ??
-    apiData.result ??
-    apiData
+function sleep(ms: number) {
+  return new Promise(resolve =>
+    setTimeout(resolve, ms)
   );
 }
 
-function getErrorMessage(apiData: any, apiResult: any): string {
-  return (
-    apiResult?.error_msg ||
-    apiResult?.msg ||
-    apiData?.error_response?.msg ||
-    apiData?.error_response?.sub_msg ||
-    "AliExpress order creation failed."
+function validId(value: unknown): string {
+
+  if (
+    typeof value === "number" &&
+    !Number.isSafeInteger(value)
+  ) {
+    return "";
+  }
+
+  const text = String(value ?? "");
+
+  return /^\d+$/.test(text) ? text : "";
+}
+
+function extractIds(result: any): string[] {
+
+  const value =
+    result?.order_list?.number ??
+    result?.order_list ??
+    [];
+
+  const list = Array.isArray(value)
+    ? value
+    : [value];
+
+  return [...new Set(
+    list.map(validId).filter(Boolean)
+  )];
+}
+
+function getError(data: any, result: any) {
+
+  return String(
+    result?.error_msg ||
+    result?.msg ||
+    data?.error_response?.sub_msg ||
+    data?.error_response?.msg ||
+    "AliExpress request failed"
   );
 }
 
-// Only retry when AliExpress explicitly reports a stock-related error.
-function isStockError(apiData: any, apiResult: any): boolean {
-  const errorText = [
-    getErrorMessage(apiData, apiResult),
-    apiResult?.error_code,
-    apiResult?.code,
-    apiData?.error_response?.code,
-    apiData?.error_response?.sub_code,
-    JSON.stringify(apiResult || {}),
-  ]
-    .join(" ")
-    .toLowerCase();
+// ==========================================
+// SIGNED ALIEXPRESS API REQUEST
+// ==========================================
 
-  const stockKeywords = [
-    "out of stock",
-    "sold out",
-    "insufficient stock",
-    "stock insufficient",
-    "not enough stock",
-    "stock not enough",
-    "sku stock",
-    "sku unavailable",
-    "inventory insufficient",
-    "inventory not enough",
-    "product unavailable",
-    "sku is unavailable",
-    "quantity exceeds stock",
-    "stock quantity",
-  ];
+async function callAliExpress(
+  method: string,
+  businessParams: Record<string, string>,
+  accessToken: string
+) {
 
-  return stockKeywords.some((keyword) =>
-    errorText.includes(keyword)
+  const appKey = process.env.ALIEXPRESS_APP_KEY;
+  const appSecret = process.env.ALIEXPRESS_APP_SECRET;
+
+  if (!appKey || !appSecret) {
+    throw new Error(
+      "AliExpress configuration missing"
+    );
+  }
+
+  const commonParams: Record<string, string> = {
+    app_key: appKey,
+    v: "2.0",
+    timestamp: Date.now().toString(),
+    method,
+    format: "json",
+    session: accessToken,
+    partner_id: "iop-sdk-java-20181207",
+    sign_method: "sha256",
+    simplify: "true",
+  };
+
+  const allParams = {
+    ...commonParams,
+    ...businessParams,
+  };
+
+  const signString = Object.keys(allParams)
+    .sort()
+    .map(key => key + allParams[key])
+    .join("");
+
+  const sign = crypto
+    .createHmac("sha256", appSecret)
+    .update(signString, "utf8")
+    .digest("hex")
+    .toUpperCase();
+
+  const query = new URLSearchParams({
+    ...commonParams,
+    sign,
+  });
+
+  const response = await fetch(
+    `${API_URL}?${query.toString()}`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type":
+          "application/x-www-form-urlencoded;charset=UTF-8",
+      },
+      body: new URLSearchParams(
+        businessParams
+      ).toString(),
+      cache: "no-store",
+    }
   );
+
+  const raw = await response.text();
+
+  // Preserve large numeric identifiers as strings.
+  const safeJson = raw.replace(
+    /("(?:order_id|product_id|id|child_id)"\s*:\s*)(\d{16,})(?=\s*[,}])/g,
+    '$1"$2"'
+  ).replace(
+    /("(?:order_list|number)"\s*:\s*\[)([\d,\s]+)(\])/g,
+    (_, start, values, end) =>
+      start +
+      values.replace(/\d+/g, (v: string) => `"${v}"`) +
+      end
+  );
+
+  let data: any;
+
+  try {
+    data = JSON.parse(safeJson);
+  } catch {
+    throw new Error(
+      "AliExpress returned an invalid JSON response"
+    );
+  }
+
+  return {
+    ok: response.ok,
+    status: response.status,
+    data,
+  };
 }
+
+// ==========================================
+// RETRIEVE ALIEXPRESS ACCOUNT
+// ==========================================
+
+async function getAccount(accountId: string) {
+
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SECRET_KEY;
+
+  if (!url || !key) {
+    throw new Error("Supabase configuration missing");
+  }
+
+  const response = await fetch(
+    `${url}/rest/v1/aliexpress_accounts` +
+    `?select=access_token,access_token_expires_at,connection_status` +
+    `&aliexpress_user_id=eq.${encodeURIComponent(accountId)}` +
+    `&limit=1`,
+    {
+      headers: {
+        apikey: key,
+        Authorization: `Bearer ${key}`,
+      },
+      cache: "no-store",
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error("Could not retrieve account");
+  }
+
+  const accounts = await response.json();
+  const account = accounts[0];
+
+  if (
+    !account ||
+    account.connection_status !== "connected"
+  ) {
+    throw new Error("Account is not connected");
+  }
+
+  if (!account.access_token) {
+    throw new Error("Access token missing");
+  }
+
+  if (
+    account.access_token_expires_at &&
+    Date.now() >= new Date(
+      account.access_token_expires_at
+    ).getTime()
+  ) {
+    throw new Error("Access token expired");
+  }
+
+  return account;
+}
+
+// ==========================================
+// GET ORDER DETAILS
+// ==========================================
+
+async function getOrderDetails(
+  orderId: string,
+  accessToken: string
+) {
+
+  const response = await callAliExpress(
+    "aliexpress.trade.ds.order.get",
+    {
+      single_order_query: JSON.stringify({
+        order_id: orderId,
+      }),
+    },
+    accessToken
+  );
+
+  if (
+    !response.ok ||
+    response.data.error_response
+  ) {
+    throw new Error("Order detail query failed");
+  }
+
+  const result =
+    response.data
+      .aliexpress_trade_ds_order_get_response
+      ?.result ??
+    response.data.result;
+
+  if (!result || typeof result !== "object") {
+    throw new Error("Order details unavailable");
+  }
+
+  return result;
+}
+
+function getChildOrders(result: any): any[] {
+
+  const children =
+    result?.child_order_list
+      ?.aeop_child_order_info ??
+    result?.child_order_list
+      ?.ae_child_order_info ??
+    result?.child_order_list ??
+    [];
+
+  if (Array.isArray(children)) {
+    return children;
+  }
+
+  if (children && children.product_id) {
+    return [children];
+  }
+
+  return [];
+}
+
+// ==========================================
+// VERIFY ORIGINAL ORDER AND PRICE
+// ==========================================
+
+async function verifyOriginalOrder(
+  orderIds: string[],
+  productId: string,
+  quantity: number,
+  currency: string,
+  accessToken: string
+) {
+
+  // Only read-only queries are retried.
+  // Order creation is never retried here.
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+
+    if (attempt > 0) {
+      await sleep(attempt * 2000);
+    }
+
+    const matches: {
+      originalOrderId: string;
+      originalPrice: number;
+      priceCurrency: string;
+    }[] = [];
+
+    let allResolved = true;
+
+    for (const orderId of orderIds) {
+
+      try {
+
+        const detail = await getOrderDetails(
+          orderId,
+          accessToken
+        );
+
+        const children = getChildOrders(detail);
+
+        if (!children.length) {
+          allResolved = false;
+          continue;
+        }
+
+        const matching = children.filter(
+          child =>
+            validId(child.product_id) === productId
+        );
+
+        if (!matching.length) continue;
+
+        // Do not treat a combined original + addon
+        // order total as the original product price.
+
+        if (matching.length !== children.length) {
+          allResolved = false;
+          continue;
+        }
+
+        const totalQuantity = matching.reduce(
+          (sum, child) =>
+            sum + Number(child.product_count),
+          0
+        );
+
+        if (totalQuantity !== quantity) {
+          allResolved = false;
+          continue;
+        }
+
+        const amount = detail.order_amount;
+
+        const amountText = String(
+          amount?.amount ?? ""
+        );
+
+        const amountCurrency = String(
+          amount?.currency_code ?? ""
+        ).toUpperCase();
+
+        if (
+          !/^\d+(\.\d+)?$/.test(amountText) ||
+          amountCurrency !== currency
+        ) {
+          allResolved = false;
+          continue;
+        }
+
+        const price = Number(amountText);
+
+        if (
+          !Number.isFinite(price) ||
+          price < 0
+        ) {
+          allResolved = false;
+          continue;
+        }
+
+        matches.push({
+          originalOrderId: orderId,
+          originalPrice: price,
+          priceCurrency: amountCurrency,
+        });
+
+      } catch {
+
+        allResolved = false;
+      }
+    }
+
+    if (
+      allResolved &&
+      matches.length === 1
+    ) {
+      return {
+        mappingVerified: true,
+        ...matches[0],
+      };
+    }
+  }
+
+  return {
+    mappingVerified: false,
+    originalOrderId: null,
+    originalPrice: null,
+    priceCurrency: null,
+    verificationMessage:
+      "Order created, but original Order ID or GBP amount could not be verified.",
+  };
+}
+
+// ==========================================
+// MAIN ORDER CREATION API
+// ==========================================
 
 export async function POST(req: NextRequest) {
+
+  let submitted = false;
+
   try {
+
     const body = await req.json();
 
-    const accountId = String(body.accountId || "").trim();
-    const productId = String(body.productId || "").trim();
+    const accountId = validId(body.accountId);
+    const productId = validId(body.productId);
     const quantity = Number(body.quantity);
+
     const address = body.address || {};
 
-    const paymentMode =
-      body.payment === "automatic" ? "automatic" : "manual";
+    // SKU ATTR IS OPTIONAL
+    const skuAttr = String(
+      body.skuAttr ?? ""
+    ).trim();
 
-    const currency = String(body.currency || "GBP").toUpperCase();
+    const currency = String(
+      body.currency || "GBP"
+    ).toUpperCase();
 
     const firstName = String(
-      address.first_name || address.firstName || ""
+      address.first_name || ""
     ).trim();
 
     const lastName = String(
-      address.last_name || address.lastName || ""
+      address.last_name || ""
     ).trim();
 
     const fullName =
-      [firstName, lastName].filter(Boolean).join(" ") ||
+      [firstName, lastName]
+        .filter(Boolean)
+        .join(" ") ||
       String(address.full_name || "").trim();
 
-    // Input validation
     if (
-      !/^\d+$/.test(accountId) ||
-      !/^\d+$/.test(productId) ||
+      !accountId ||
+      !productId ||
       !Number.isSafeInteger(Number(productId)) ||
       !Number.isSafeInteger(quantity) ||
-      quantity < 1
+      quantity < 1 ||
+      currency !== "GBP"
     ) {
       return NextResponse.json(
         {
           success: false,
+          confirmedRejected: true,
           step: "INPUT_VALIDATION",
-          message: "Invalid account ID, product ID or quantity.",
+          message: "Invalid account, product or quantity",
         },
         { status: 400 }
       );
     }
 
-    // Address validation
-    const requiredAddressFields = {
-      recipientName: fullName,
-      address: String(address.address || "").trim(),
-      city: String(address.city || "").trim(),
-      province: String(address.province || "").trim(),
-      country: String(address.country || "").trim().toUpperCase(),
-      zip: String(address.zip || "").trim(),
-    };
-
-    const missingFields = Object.entries(requiredAddressFields)
-      .filter(([, value]) => !value)
-      .map(([key]) => key);
-
     if (
-      missingFields.length > 0 ||
       fullName.length < 2 ||
       fullName.length > 32 ||
-      !/^[A-Z]{2}$/.test(requiredAddressFields.country)
+      !address.address ||
+      !address.city ||
+      !address.province ||
+      !address.zip ||
+      address.country !== "GB" ||
+      !/^\d{10}$/.test(
+        String(address.mobile_no || "")
+      )
     ) {
       return NextResponse.json(
         {
           success: false,
+          confirmedRejected: true,
           step: "ADDRESS_VALIDATION",
-          message: "Invalid or incomplete delivery address.",
-          missingFields,
-          recipientNameLength: fullName.length,
+          message: "Invalid delivery address",
         },
         { status: 400 }
       );
     }
 
-    // Currency validation
-    if (!["GBP", "USD"].includes(currency)) {
-      return NextResponse.json(
-        {
-          success: false,
-          step: "PAYMENT_VALIDATION",
-          message: "Unsupported payment currency.",
-        },
-        { status: 400 }
-      );
-    }
+    const account = await getAccount(accountId);
 
-    // Environment variables
-    const appKey = process.env.ALIEXPRESS_APP_KEY;
-    const appSecret = process.env.ALIEXPRESS_APP_SECRET;
-    const supabaseUrl = process.env.SUPABASE_URL;
-    const supabaseKey = process.env.SUPABASE_SECRET_KEY;
-
-    if (!appKey || !appSecret || !supabaseUrl || !supabaseKey) {
-      return NextResponse.json(
-        {
-          success: false,
-          step: "ENVIRONMENT_CONFIGURATION",
-          message:
-            "AliExpress or Supabase environment variables are missing.",
-        },
-        { status: 500 }
-      );
-    }
-
-    // Retrieve selected AliExpress account
-    const accountResponse = await fetch(
-      `${supabaseUrl}/rest/v1/aliexpress_accounts?select=access_token,access_token_expires_at,connection_status&aliexpress_user_id=eq.${encodeURIComponent(accountId)}&limit=1`,
-      {
-        method: "GET",
-        headers: {
-          apikey: supabaseKey,
-          Authorization: `Bearer ${supabaseKey}`,
-        },
-        cache: "no-store",
-      }
-    );
-
-    if (!accountResponse.ok) {
-      return NextResponse.json(
-        {
-          success: false,
-          step: "SUPABASE_ACCOUNT_LOOKUP",
-          message: "Could not retrieve AliExpress account.",
-          details: await accountResponse.text(),
-        },
-        { status: 502 }
-      );
-    }
-
-    const accounts = await accountResponse.json();
-    const account = accounts[0];
-
-    if (!account || account.connection_status !== "connected") {
-      return NextResponse.json(
-        {
-          success: false,
-          step: "ACCOUNT_VALIDATION",
-          message: "Selected AliExpress account is not connected.",
-        },
-        { status: 404 }
-      );
-    }
-
-    if (!account.access_token) {
-      return NextResponse.json(
-        {
-          success: false,
-          step: "TOKEN_VALIDATION",
-          message: "AliExpress access token is missing.",
-        },
-        { status: 400 }
-      );
-    }
-
-    if (
-      account.access_token_expires_at &&
-      Date.now() >= new Date(account.access_token_expires_at).getTime()
-    ) {
-      return NextResponse.json(
-        {
-          success: false,
-          step: "TOKEN_VALIDATION",
-          message: "AliExpress access token has expired.",
-        },
-        { status: 401 }
-      );
-    }
-
-    // Phone details
-    const mobileNo = String(address.mobile_no || "").replace(/\D/g, "");
-
-    const phoneCountry = String(
-      address.phone_country || "+"
-    ).trim();
-
-    // Delivery address used for both attempts
     const logisticsAddress = {
-      zip: requiredAddressFields.zip,
-      country: requiredAddressFields.country,
-      address: requiredAddressFields.address,
-      address2: String(address.address2 ?? "").trim(),
-      city: requiredAddressFields.city,
+      zip: String(address.zip).replace(/\s+/g, ""),
+      country: "GB",
+      address: String(address.address),
+      address2: String(address.address2 || ""),
+      city: String(address.city),
       contact_person: fullName,
-      mobile_no: mobileNo,
-      phone_country: phoneCountry,
+      mobile_no: String(address.mobile_no),
+      phone_country: "+44",
       full_name: fullName,
-      province: requiredAddressFields.province,
+      province: String(address.province),
     };
 
-    // Original customer product
     const customerProduct = {
-      logistics_service_name: String(
-        body.logisticsServiceName ?? ""
-      ),
-      sku_attr: String(body.skuAttr ?? "").trim(),
-      product_count: quantity,
       product_id: Number(productId),
-      order_memo: String(body.orderMemo ?? ""),
+      product_count: quantity,
+
+      // Empty SKU Attr is accepted here.
+      sku_attr: skuAttr,
+
+      logistics_service_name: String(
+        body.logisticsServiceName || ""
+      ),
+      order_memo: String(body.orderMemo || ""),
     };
 
-    // Payment settings
     const dsExtendRequest = {
       payment: {
         pay_currency: currency,
-        try_to_pay:
-          paymentMode === "automatic" ? "true" : "false",
+        try_to_pay: "false",
       },
       promotion: {
         promotion_code: "",
       },
     };
 
-    // Create one AliExpress order with two product lines
-    async function createAliExpressOrder(addon: typeof FALLBACK_PRODUCTS[number]) {
+    async function createOrder(
+      addon: typeof FALLBACK_PRODUCTS[number]
+    ) {
+
+      const productItems = [
+        customerProduct,
+        {
+          product_id: Number(addon.productId),
+          product_count: 1,
+          sku_attr: addon.skuAttr,
+          logistics_service_name: "",
+          order_memo: "",
+        },
+      ];
+
       const orderRequest = {
-        product_items: [
-          customerProduct,
-          {
-            logistics_service_name: String(
-              body.logisticsServiceName ?? ""
-            ),
-            sku_attr: addon.skuAttr,
-            product_count: 1,
-            product_id: Number(addon.productId),
-            order_memo: "",
-          },
-        ],
+        product_items: productItems,
         logistics_address: logisticsAddress,
       };
 
-      const method = "aliexpress.ds.order.create";
+      submitted = true;
 
-      const commonParams: Record<string, string> = {
-        app_key: appKey!,
-        v: "2.0",
-        timestamp: Date.now().toString(),
-        method,
-        format: "json",
-        session: account.access_token,
-        partner_id: "iop-sdk-java-20181207",
-        sign_method: "sha256",
-        simplify: "true",
-      };
-
-      const businessParams: Record<string, string> = {
-        ds_extend_request: JSON.stringify(dsExtendRequest),
-        param_place_order_request4_open_api_d_t_o:
-          JSON.stringify(orderRequest),
-      };
-
-      // Generate AliExpress signature
-      const allParams = {
-        ...commonParams,
-        ...businessParams,
-      };
-
-      const signString = Object.keys(allParams)
-        .sort()
-        .map((key) => key + allParams[key])
-        .join("");
-
-      const sign = crypto
-        .createHmac("sha256", appSecret!)
-        .update(signString, "utf8")
-        .digest("hex")
-        .toUpperCase();
-
-      const queryParams = new URLSearchParams({
-        ...commonParams,
-        sign,
-      });
-
-      const formBody = new URLSearchParams(businessParams);
-
-      // Do not automatically retry network failures.
-      const apiResponse = await fetch(
-        `https://api-sg.aliexpress.com/sync?${queryParams.toString()}`,
+      const response = await callAliExpress(
+        "aliexpress.ds.order.create",
         {
-          method: "POST",
-          headers: {
-            "Content-Type":
-              "application/x-www-form-urlencoded;charset=UTF-8",
-          },
-          body: formBody.toString(),
-          cache: "no-store",
-        }
+          ds_extend_request:
+            JSON.stringify(dsExtendRequest),
+
+          param_place_order_request4_open_api_d_t_o:
+            JSON.stringify(orderRequest),
+        },
+        account.access_token
       );
 
-      const responseText = await apiResponse.text();
+      const result =
+        response.data
+          .aliexpress_ds_order_create_response
+          ?.result ??
+        response.data.result ??
+        response.data;
 
-      let apiData: any;
-
-      try {
-        apiData = JSON.parse(responseText);
-      } catch {
-        return {
-          success: false,
-          uncertain: true,
-          message: "AliExpress returned a non-JSON response.",
-          httpStatus: apiResponse.status,
-          response: responseText.slice(0, 3000),
-          addon,
-          orderRequest,
-        };
-      }
-
-      const apiResult = getApiResult(apiData);
+      const orderIds = extractIds(result);
 
       const success =
-        apiResponse.ok &&
-        !apiData.error_response &&
-        apiResult.is_success === true;
+        response.ok &&
+        !response.data.error_response &&
+        result.is_success === true;
 
-      if (success) {
-        return {
-          success: true,
-          addon,
-          orderRequest,
-          orderIds:
-            apiResult.order_list?.number ||
-            apiResult.order_list ||
-            [],
-          apiData,
-        };
-      }
+      const message = getError(
+        response.data,
+        result
+      );
+
+      const stockError =
+        /out of stock|sold out|insufficient stock|inventory insufficient|stock not enough/i
+          .test(message);
 
       return {
-        success: false,
-        uncertain: false,
+        success,
+        orderIds,
+        message,
+        stockError,
         addon,
-        orderRequest,
-        message: getErrorMessage(apiData, apiResult),
-        stockError: isStockError(apiData, apiResult),
-        httpStatus: apiResponse.status,
-        apiData,
+        productItems,
+        apiData: response.data,
+
+        // An explicit rejection alone does not
+        // prove the multi-product request was atomic.
+        explicitRejection:
+          response.ok &&
+          result.is_success === false &&
+          orderIds.length === 0,
       };
     }
 
-    // FIRST ATTEMPT: Product A
-    let firstAttempt;
+    // ========================================
+    // PRODUCT A
+    // ========================================
 
-    try {
-      firstAttempt = await createAliExpressOrder(
-        FALLBACK_PRODUCTS[0]
-      );
-    } catch (error) {
-      console.error("Product A request failed:", error);
+    let result = await createOrder(
+      FALLBACK_PRODUCTS[0]
+    );
 
-      return NextResponse.json(
-        {
-          success: false,
-          step: "PRODUCT_A_REQUEST_FAILED",
-          message:
-            "The request to AliExpress failed without a confirmed response. No automatic fallback was attempted to avoid duplicate orders.",
-        },
-        { status: 502 }
-      );
-    }
+    let fallbackUsed = false;
 
-    // Product A succeeded
-    if (firstAttempt.success) {
-      return NextResponse.json({
-        success: true,
-        step: "ORDER_CREATED",
-        selectedAddon: firstAttempt.addon,
-        orderIds: firstAttempt.orderIds,
-        paymentMode,
-        requestedCurrency: currency,
-        productItems: firstAttempt.orderRequest.product_items,
-        data: firstAttempt.apiData,
-      });
-    }
+    // Enable automatic fallback only if you have
+    // verified that stock rejection is atomic.
 
-    // Uncertain response: never submit another order
-    if (firstAttempt.uncertain) {
-      return NextResponse.json(
-        {
-          success: false,
-          step: "PRODUCT_A_RESPONSE_UNCERTAIN",
-          message:
-            "AliExpress response could not be confirmed. Check your AliExpress orders before trying again.",
-          firstAttempt,
-        },
-        { status: 502 }
-      );
-    }
+    const allowFallback =
+      process.env.ALIEXPRESS_ATOMIC_STOCK_FALLBACK
+      === "true";
 
-    // Only fall back when the first attempt clearly reports a stock error
-    if (!firstAttempt.stockError) {
-      return NextResponse.json(
-        {
-          success: false,
-          step: "PRODUCT_A_ORDER_FAILED",
-          message: firstAttempt.message,
-          fallbackAttempted: false,
-          firstAttempt,
-        },
-        { status: 502 }
-      );
-    }
+    if (
+      !result.success &&
+      result.explicitRejection &&
+      result.stockError &&
+      allowFallback
+    ) {
 
-    // SECOND ATTEMPT: Product B
-    let secondAttempt;
-
-    try {
-      secondAttempt = await createAliExpressOrder(
+      result = await createOrder(
         FALLBACK_PRODUCTS[1]
       );
-    } catch (error) {
-      console.error("Product B request failed:", error);
+
+      fallbackUsed = true;
+    }
+
+    if (!result.success) {
 
       return NextResponse.json(
         {
           success: false,
-          step: "PRODUCT_B_REQUEST_FAILED",
-          message:
-            "Product A was rejected for a stock-related error, but the Product B request did not receive a confirmed response. Check AliExpress orders before retrying.",
-          firstAttempt,
+          confirmedRejected: false,
+          uncertain: true,
+          step: "ORDER_FAILED",
+          message: result.message,
+          orderIds: result.orderIds,
+          fallbackUsed,
         },
         { status: 502 }
       );
     }
 
-    if (secondAttempt.success) {
-      return NextResponse.json({
-        success: true,
-        step: "ORDER_CREATED_WITH_FALLBACK",
-        selectedAddon: secondAttempt.addon,
-        fallbackUsed: true,
-        orderIds: secondAttempt.orderIds,
-        paymentMode,
-        requestedCurrency: currency,
-        productItems: secondAttempt.orderRequest.product_items,
-        firstAttempt: {
-          product: FALLBACK_PRODUCTS[0].name,
-          message: firstAttempt.message,
-        },
-        data: secondAttempt.apiData,
-      });
-    }
+    // ========================================
+    // VERIFY ORDER ID AND ACTUAL ORDER AMOUNT
+    // ========================================
 
-    return NextResponse.json(
-      {
-        success: false,
-        step: "ALL_PRODUCT_ATTEMPTS_FAILED",
-        message:
-          "Product A and Product B could not be ordered. No successful order was confirmed.",
-        firstAttempt: {
-          product: FALLBACK_PRODUCTS[0],
-          message: firstAttempt.message,
-          stockError: firstAttempt.stockError,
-        },
-        secondAttempt: {
-          product: FALLBACK_PRODUCTS[1],
-          message: secondAttempt.message,
-          httpStatus: secondAttempt.httpStatus,
-          response: secondAttempt.apiData,
-        },
-      },
-      { status: 502 }
-    );
+    const verified = result.orderIds.length
+      ? await verifyOriginalOrder(
+          result.orderIds,
+          productId,
+          quantity,
+          currency,
+          account.access_token
+        )
+      : {
+          mappingVerified: false,
+          originalOrderId: null,
+          originalPrice: null,
+          priceCurrency: null,
+        };
+
+    return NextResponse.json({
+      success: true,
+      step: fallbackUsed
+        ? "ORDER_CREATED_WITH_FALLBACK"
+        : "ORDER_CREATED",
+
+      orderIds: result.orderIds,
+
+      selectedAddon: result.addon,
+      fallbackUsed,
+      paymentMode: "manual",
+      requestedCurrency: currency,
+      skuAttrUsed: skuAttr,
+      productItems: result.productItems,
+
+      ...verified,
+    });
+
   } catch (error) {
-    const errorMessage =
-      error instanceof Error ? error.message : String(error);
-
-    console.error(
-      "AliExpress create order error:",
-      errorMessage
-    );
 
     return NextResponse.json(
       {
         success: false,
-        step: "SERVER_EXCEPTION",
-        message: "AliExpress order creation request failed.",
-        debug: errorMessage,
+        confirmedRejected: !submitted,
+        uncertain: submitted,
+
+        step: submitted
+          ? "ORDER_RESPONSE_UNCERTAIN"
+          : "INPUT_VALIDATION",
+
+        message:
+          error instanceof Error
+            ? error.message
+            : "Order request failed",
       },
       { status: 500 }
     );
