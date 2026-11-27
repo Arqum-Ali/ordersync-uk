@@ -8,12 +8,12 @@ const FALLBACK_PRODUCTS = [
   {
     name: "Product A - Black",
     productId: "1005013367794536",
-    skuAttr: "14:10",
+    skuAttr: "5:200003528#1PCS;14:10#Black",
   },
   {
     name: "Product B - 1pcs With Box",
     productId: "1005012432973680",
-    skuAttr: "14:193",
+    skuAttr: "14:193#1pcs With Box",
   },
 ];
 
